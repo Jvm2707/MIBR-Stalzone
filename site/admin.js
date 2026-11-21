@@ -421,7 +421,8 @@ const TABS = {
         ${pode(s) ? `<div><button type="button" data-procura="${esc(s.id)}">O que o squad procura</button></div>` : ''}
         <p><span class="count">${ms.length - nRes}</span> <span class="muted">${ms.length - nRes === 1 ? 'fixo' : 'fixos'}, ${nRes} ${nRes === 1 ? 'reserva' : 'reservas'}</span></p>
         ${ms.length ? `<ul class="vagas">${ms.map((m) => `<li><span>${esc(m.nick)}</span>${pode(s)
-          ? `<select data-vaga="${esc(m.id)}" aria-label="Vaga de ${esc(m.nick)}">${opts([['fixo', 'Fixo'], ['reserva', 'Reserva']], m.vaga === 'reserva' ? 'reserva' : 'fixo')}</select>`
+          ? `<span class="vaga-acoes"><select data-vaga="${esc(m.id)}" aria-label="Vaga de ${esc(m.nick)}">${opts([['fixo', 'Fixo'], ['reserva', 'Reserva']], m.vaga === 'reserva' ? 'reserva' : 'fixo')}</select>
+            <button type="button" class="linkish" data-tirar="${esc(m.id)}" aria-label="Tirar ${esc(m.nick)} do squad">tirar</button></span>`
           : `<span class="muted">${m.vaga === 'reserva' ? 'Reserva' : 'Fixo'}</span>`}</li>`).join('')}</ul>` : '<p class="muted">Ninguém no squad ainda.</p>'}
         ${admin ? `<div class="actions"><button type="button" data-edit="${esc(s.id)}">Editar</button><button type="button" class="danger" data-del="${esc(s.id)}">Apagar</button></div>` : ''}
       </article>`;
@@ -442,6 +443,14 @@ const TABS = {
       if (!b) return;
       if (b.dataset.ficha) return ficha(b.dataset.ficha);
       if (b.dataset.procura) return procuraForm(D.squads.find((s) => s.id === b.dataset.procura));
+      if (b.dataset.tirar) {
+        const m = D.members.find((x) => x.id === b.dataset.tirar);
+        if (!confirm(`Tirar ${m.nick} do squad ${sqName(m.squad)}? Ele continua no clã, só fica sem squad.`)) return;
+        Object.assign(m, await call('member', { method: 'POST', body: { id: m.id, tirarDoSquad: true } }));
+        D.squads = await call('squads');
+        await TABS.squads();
+        return msg(`${m.nick} saiu do squad.`);
+      }
       if (b.hasAttribute('data-novo')) return squadForm();
       if (b.dataset.edit) return squadForm(D.squads.find((s) => s.id === b.dataset.edit));
       if (b.dataset.del) {
@@ -943,7 +952,7 @@ function ficha(id) {
   const row = (k, v) => (v ? `<tr><th scope="row">${k}</th><td class="pre">${esc(v)}</td></tr>` : '');
   dlg(`<h2 id="dlg-title">${esc(m.nick)}</h2>
     <p class="meta">Registrado em ${fmtDate(m.criadoEm)}.</p>
-    ${admin && !m.candidato ? '<div class="actions"><button type="button" data-reg>Editar registro</button></div>' : ''}
+    ${admin && !m.candidato ? '<div class="actions"><button type="button" data-reg>Editar registro</button><button type="button" class="danger" data-apagar-membro>Apagar membro</button></div>' : ''}
     <div id="fi-per"></div>
     <p>Frequência no período: ${fmtFreq(freq(id))}</p>
     <h3>KDA no período</h3>
@@ -1004,6 +1013,15 @@ function ficha(id) {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.hasAttribute('data-reg')) return registroForm(m);
+    if (b.hasAttribute('data-apagar-membro')) {
+      if (!confirm(`Apagar ${m.nick} de vez?\n\nSome o registro, a ficha e as prints de gear. Não dá pra desfazer.\nA presença e os resultados antigos ficam no histórico com o nick.\n\nSe a pessoa só saiu do clã, prefira o status "Removido".`)) return;
+      await call('member?id=' + id, { method: 'DELETE' });
+      D.members = D.members.filter((x) => x.id !== id);
+      D.squads = await call('squads');
+      $('#dlg').close();
+      redraw();
+      return msg(`${m.nick} foi apagado.`);
+    }
     const salvarGear = async (gearEdit, texto) => {
       Object.assign(m, await call('member', { method: 'POST', body: { id, gearEdit } }));
       ficha(id);

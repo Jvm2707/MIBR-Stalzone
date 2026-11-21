@@ -308,6 +308,20 @@ const uso = (await call('GET', '/api/admin/uso', { token: sup })).data;
 assert.ok(uso.hoje > 0 && uso.limite === 1000, 'contador conta gravações');
 assert.equal((await call('GET', '/api/admin/uso', { token: sn.token })).status, 403);
 
+// ---- tirar do squad e apagar membro ----
+const membrosAgora = (await call('GET', '/api/admin/members', { token: sup })).data;
+const doAlfa = membrosAgora.find((m) => m.squad === sqA.id);
+const doBravo = membrosAgora.find((m) => m.squad === sqB.id);
+assert.equal((await call('POST', '/api/admin/member', { body: { id: doBravo.id, tirarDoSquad: true }, token: lid2 })).status, 404, 'líder não tira de outro squad');
+assert.equal((await call('POST', '/api/admin/member', { body: { id: doAlfa.id, tirarDoSquad: true }, token: lid2 })).data.squad, '', 'líder tira do próprio squad');
+assert.ok(!(await call('GET', '/api/squads')).data.find((s) => s.id === sqA.id).fixos.includes(doAlfa.nick), 'saiu da lista pública');
+assert.equal((await call('DELETE', `/api/admin/member?id=${doBravo.id}`, { token: lid2 })).status, 403, 'líder não apaga membro');
+assert.equal((await call('DELETE', `/api/admin/member?id=${doBravo.id}`, { token: sup })).status, 200);
+assert.ok(!(await call('GET', '/api/admin/members', { token: sup })).data.some((m) => m.id === doBravo.id), 'membro apagado');
+assert.equal(store.get('nick:' + doBravo.nick.toLowerCase()), undefined, 'nick liberado');
+assert.ok(!(await call('GET', '/api/squads')).data.find((s) => s.id === sqB.id).fixos.includes(doBravo.nick), 'sumiu do squad');
+assert.equal((await call('POST', '/api/register', { body: reg({ nick: doBravo.nick }), ip: '5.4.3.2' })).status, 200, 'nick pode registrar de novo');
+
 // trocar cargo derruba a sessão
 await call('POST', '/api/admin/user', { body: { name: 'sn', role: 'lider_squad', squad: sqB.id }, token: sup });
 assert.equal((await call('GET', '/api/admin/me', { token: sn.token })).status, 401);

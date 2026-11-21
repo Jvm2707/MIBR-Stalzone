@@ -807,6 +807,12 @@ async function admin(req, env, path, m, url) {
         squadMudou = true;
       }
       const oldSquad = mem.squad;
+      // tirar do squad: admin ou o líder do próprio squad (canSee já garantiu que é do squad dele)
+      if (b.tirarDoSquad && mem.squad) {
+        mem.squad = '';
+        mem.vaga = 'fixo';
+        squadMudou = true;
+      }
       if (isAdmin) {
         // dados do registro (só admin): vale o mesmo limite de tamanho do formulário público
         if (b.dados) {
@@ -859,8 +865,23 @@ async function admin(req, env, path, m, url) {
         const members = (await listVals(env, 'member:')).map((x) => (x.id === mem.id ? mem : x));
         await syncSquads(env, [oldSquad, mem.squad], members);
       }
-      await log(env, u, b.gearEdit ? `${b.gearEdit.remover ? 'apagou' : 'editou'} um gear de ${mem.nick}` : b.dados ? `editou o registro de ${mem.nick}` : `editou a ficha de ${mem.nick}`);
+      if (b.tirarDoSquad) await log(env, u, `tirou ${mem.nick} do squad ${await getJ(env, 'squad:' + oldSquad).then((s) => s?.nome || '')}`);
+      else await log(env, u, b.gearEdit ?`${b.gearEdit.remover ? 'apagou' : 'editou'} um gear de ${mem.nick}` : b.dados ? `editou o registro de ${mem.nick}` : `editou a ficha de ${mem.nick}`);
       return json(mem);
+    }
+
+    // Apagar membro (só admin): some o registro, o nick e as prints de gear.
+    // Presença e resultados antigos ficam no histórico com o nick (o painel ignora quem não existe mais).
+    case 'DELETE member': {
+      need(isAdmin);
+      const mem = isId(q('id')) && (await getJ(env, 'member:' + q('id')));
+      if (!mem) fail(404, 'Membro não encontrado.');
+      await Promise.all(mem.gear.flatMap((g) => g.imgs).map((i) => env.KV.delete('img:' + i)));
+      await env.KV.delete('member:' + mem.id);
+      if ((await getJ(env, 'nick:' + mem.nick.toLowerCase())) === mem.id) await env.KV.delete('nick:' + mem.nick.toLowerCase());
+      if (mem.squad) await syncSquads(env, [mem.squad], (await listVals(env, 'member:')).filter((x) => x.id !== mem.id));
+      await log(env, u, `apagou o membro ${mem.nick}`);
+      return json({ ok: true });
     }
 
     // ---- presença ----

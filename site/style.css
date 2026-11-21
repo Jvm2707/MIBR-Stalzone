@@ -221,3 +221,4 @@ summary { cursor: pointer; padding: 6px 0; }
 .ordem button { min-height: 38px; padding: 6px 12px; }
 .ordem button[aria-pressed=true] { border-color: var(--yellow); color: var(--yellow); }
 .pill.inativo { background: #6b1f1f; }
+.vaga-acoes { display: inline-flex; gap: 8px; align-items: center; }
