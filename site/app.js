@@ -49,20 +49,26 @@ function say(el, msg, bad = false) {
   el.classList.toggle('bad', bad);
 }
 
-// Reduz o print pra JPEG de no máximo ~1 MB antes de enviar.
+// Limites do navegador (o Worker confere de novo: 1 MB e 4096px por imagem).
+const IMG_ORIGINAL_MAX = 15e6; // acima disso nem tenta abrir
+const IMG_ALVO = 8e5; // ~800 KB depois de comprimir
+const IMG_LADO = 1920; // lado maior depois de redimensionar
+
+// Redimensiona pra no máx. 1920px e comprime em webp (ou jpeg, se o navegador não fizer webp) até ~800 KB.
 async function compress(file) {
-  if (file.size <= 1e6) return file; // já é pequeno: recomprimir só piora
   const bmp = await createImageBitmap(file);
+  if (file.size <= IMG_ALVO && Math.max(bmp.width, bmp.height) <= IMG_LADO) return file; // já está bom: recomprimir só piora
   const canvas = document.createElement('canvas');
-  let scale = Math.min(1, 1920 / Math.max(bmp.width, bmp.height));
+  let scale = Math.min(1, IMG_LADO / Math.max(bmp.width, bmp.height));
   let q = 0.85;
   let blob;
   for (let i = 0; i < 12; i++) {
     canvas.width = Math.round(bmp.width * scale);
     canvas.height = Math.round(bmp.height * scale);
     canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
-    if (blob.size <= 1e6) break;
+    blob = await new Promise((r) => canvas.toBlob(r, 'image/webp', q));
+    if (blob?.type !== 'image/webp') blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q)); // Safari antigo
+    if (blob.size <= IMG_ALVO) break;
     if (q > 0.6) q -= 0.1;
     else scale *= 0.8;
   }
@@ -92,6 +98,7 @@ function imagePicker(input, previews, max, statusEl) {
     for (const file of picked) {
       if (files.length >= max) { say(statusEl, t('Máximo de {n} imagens.', { n: max }), true); break; }
       if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { say(statusEl, t('"{nome}" não é JPG, PNG ou WEBP.', { nome: file.name }), true); continue; }
+      if (file.size > IMG_ORIGINAL_MAX) { say(statusEl, t('"{nome}" tem mais de 15 MB. Escolha uma imagem menor.', { nome: file.name }), true); continue; }
       try {
         const blob = await compress(file);
         files.push({ blob, url: URL.createObjectURL(blob) });
@@ -222,6 +229,15 @@ if (document.getElementById('f-registro')) {
     if (atual) fusoSel.value = atual; // mantém a escolha ao trocar de idioma
   }
 
+  // Tipos de gear (Speed/Tank/Híbrido...) nos formulários de registro e de gear; valor enviado sempre em português
+  function renderGearTipos() {
+    const tipos = D.cfg?.gearTipos?.length ? D.cfg.gearTipos : ['Speed', 'Tank', 'Híbrido'];
+    document.querySelectorAll('[data-gear-tipos]').forEach((box) => {
+      const marcados = new Set([...box.querySelectorAll('input:checked')].map((i) => i.value));
+      box.innerHTML = tipos.map((g) => `<label class="check"><input type="checkbox" name="gearTipo" value="${esc(g)}"${marcados.has(g) ? ' checked' : ''}> ${esc(t(g))}</label>`).join('');
+    });
+  }
+
   function renderRoles() {
     const marcados = new Set([...rolesBox.querySelectorAll('input:checked')].map((i) => i.value));
     const lista = [...(D.cfg?.playstyles.length ? D.cfg.playstyles : DEFAULT_ROLES),
@@ -270,10 +286,15 @@ if (document.getElementById('f-registro')) {
     const nicks = (arr) => (arr.length ? `<ul class="nicks">${arr.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : '');
     list.innerHTML = D.squads.map((sq) => {
       const res = sq.reservas || [];
+      const builds = (sq.builds || []).map((b) => (b.qtd ? `${b.qtd} ${t(b.tipo)}` : t(b.tipo))).join(', ');
+      // o que o squad procura vem no topo do card
       return `<article class="card">
+        ${builds || sq.funcoes.length ? `<div class="procura">
+          ${builds ? `<p>${esc(t('Procura builds: {lista}', { lista: builds }))}</p>` : ''}
+          ${sq.funcoes.length ? `<p>${esc(t('Procura funções: {f}', { f: sq.funcoes.map((f) => t(f)).join(', ') }))}</p>` : ''}
+        </div>` : ''}
         <h2>${esc(sq.nome)}</h2>
         ${sq.estilo ? `<p class="meta">${esc(sq.estilo)}</p>` : ''}
-        ${sq.funcoes.length ? `<p class="meta">${esc(t('Precisa de: {f}', { f: sq.funcoes.map((f) => t(f)).join(', ') }))}</p>` : ''}
         <p class="meta">${esc(t('Líder: {nome}', { nome: sq.lider || t('a definir') }))}</p>
         <p><span class="count">${sq.fixos.length}</span> <span class="muted">${esc(t(sq.fixos.length === 1 ? 'fixo' : 'fixos'))}</span></p>
         ${nicks(sq.fixos)}
@@ -332,6 +353,7 @@ if (document.getElementById('f-registro')) {
 
   function renderAll() {
     renderFuso();
+    renderGearTipos();
     renderRoles();
     recommend();
     renderConfig();
@@ -353,7 +375,7 @@ if (document.getElementById('f-registro')) {
   setLang(lang);
 
   api('/api/config').then((cfg) => { D.cfg = cfg; }, (e) => { D.cfgErr = e.message; })
-    .then(() => { renderConfig(); renderRoles(); recommend(); translateStatic(); });
+    .then(() => { renderConfig(); renderGearTipos(); renderRoles(); recommend(); translateStatic(); });
   api('/api/squads').then((sq) => { D.squads = sq; }, (e) => { D.squadsErr = e.message; })
     .then(() => { renderSquads(); recommend(); });
   for (const tipo of Object.keys(TIPOS)) {

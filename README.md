@@ -164,3 +164,40 @@ Ele simula o KV, o captcha e o Discord, e confere as regras de segurança: captc
 ## Idiomas do site
 
 O site público tem português, inglês e espanhol (bandeiras no topo). O painel fica só em português. As traduções estão em `site/i18n.js`, uma linha por texto: `['texto em português', 'inglês', 'espanhol']`. O que vocês escrevem pelo painel (regras, avisos, táticas, nomes de squads) aparece como foi escrito, sem tradução.
+
+## Resultados / KDA com leitura de print (Workers AI)
+
+O botão **Ler prints com IA** usa o Workers AI da Cloudflare, que tem uma cota grátis por dia. Se a cota acabar ou a IA não entender a print, a tabela aparece vazia pra preencher na mão.
+
+**Como ativar:**
+- **Pelo `wrangler.toml`** (já vem pronto neste projeto): as linhas `[ai]` e `binding = "AI"`. É só publicar de novo com `npx wrangler deploy`.
+- **Pelo painel da Cloudflare:** Worker → **Settings → Bindings → Add → Workers AI**, com o nome `AI` (em maiúsculas).
+
+Na primeira leitura, o Worker aceita sozinho a licença do modelo de visão (Llama 3.2). As prints do placar somem em 7 dias; os números salvos ficam pra sempre.
+
+**Dica:** tire a print **só do placar**, sem o resto da tela. A leitura fica bem mais certa.
+
+## Primeiro acesso: crie a season atual
+
+Entre como superadmin, vá em **Config → Seasons → Adicionar season**, confira o nome e as datas (mais ou menos 1 mês), marque **Atual** e clique em **Salvar config**. Presença, resultados e gear passam a guardar a season. O que já existia antes é encaixado na season pela data.
+
+## Secrets opcionais do Discord
+
+Configure igual aos outros (`npx wrangler secret put NOME` ou pelo painel da Cloudflare). Sem eles, nada quebra.
+
+| Nome | Pra quê |
+|---|---|
+| `DISCORD_BACKUP_WEBHOOK` | Webhook de um canal **privado** que recebe o backup semanal. |
+| `DISCORD_RESULTS_WEBHOOK` | Webhook separado pra KD e presença. Sem ele, vão pro webhook principal (o da aba Discord). |
+
+O que é postado sozinho (registro, gear, apply, KD do game, KD do dia, presença, tática) liga e desliga na aba **Discord** do painel. A presença vai só com os nomes, nunca com a justificativa.
+
+## Backup semanal automático
+
+Todo domingo às 06:00 UTC (03:00 em Brasília; no `wrangler.toml` fica `0 6 * * SUN`), o Worker gera o mesmo JSON do backup manual (sem imagens e sem usuários do painel) e manda como arquivo pro `DISCORD_BACKUP_WEBHOOK`. O horário fica em `wrangler.toml`, em `[triggers]`. Pra conferir na hora, use **Config → Testar backup agora** (só superadmin). Sem o secret, o backup não é enviado.
+
+## Limites de tamanho das imagens
+
+- **No navegador:** a print é reduzida pra no máximo 1920px no lado maior e comprimida até uns 800 KB. Arquivos acima de 15 MB são recusados antes de tudo.
+- **No Worker** (vale mesmo se alguém burlar o navegador): no máximo 1 MB por imagem, 5 MB somando o envio, 4096px de cada lado, 4 imagens por envio e 8 por post de tática ou aviso. Os valores ficam no topo do `worker/worker.js`.
+- **Prints de gear:** quando o membro manda um gear novo com prints, as prints das atualizações anteriores somem em 60 dias. O texto e o tipo de gear ficam pra sempre; as prints da última atualização ficam sem prazo.

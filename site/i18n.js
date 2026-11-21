@@ -132,6 +132,17 @@ const I18N = Object.fromEntries([
   ['Idade precisa ser um número entre 10 e 99.', 'Age must be a number between 10 and 99.', 'La edad debe ser un número entre 10 y 99.'],
   ['Cada imagem pode ter no máximo 1 MB.', 'Each image can be at most 1 MB.', 'Cada imagen puede tener como máximo 1 MB.'],
   ['Só imagens JPG, PNG ou WEBP.', 'Only JPG, PNG or WEBP images.', 'Solo imágenes JPG, PNG o WEBP.'],
+  ['"{nome}" tem mais de 15 MB. Escolha uma imagem menor.', '"{nome}" is over 15 MB. Pick a smaller image.', '"{nome}" pesa más de 15 MB. Elige una imagen más chica.'],
+  ['As imagens juntas passam de 5 MB.', 'The images together are over 5 MB.', 'Las imágenes juntas pasan de 5 MB.'],
+  ['Não deu pra ler o tamanho de uma das imagens. Tente salvar a print de novo.', "Couldn't read the size of one of the images. Try saving the screenshot again.", 'No se pudo leer el tamaño de una de las imágenes. Guarda la captura de nuevo.'],
+  // tipo de gear e procura dos squads
+  ['Tipo de gear', 'Gear type', 'Tipo de gear'],
+  ['(pode marcar mais de um)', '(you can pick more than one)', '(puedes marcar más de uno)'],
+  ['Speed', 'Speed', 'Speed'],
+  ['Híbrido', 'Hybrid', 'Híbrido'],
+  ['Procura builds: {lista}', 'Looking for builds: {lista}', 'Busca builds: {lista}'],
+  ['Procura funções: {f}', 'Looking for roles: {f}', 'Busca funciones: {f}'],
+  ['Tipo de gear inválido.', 'Invalid gear type.', 'Tipo de gear inválido.'],
   // nomes de campo que o Worker cita nos erros
   ['Função', 'Role', 'Función'],
   ['Função (outra)', 'Role (other)', 'Función (otra)'],
@@ -148,4 +159,5 @@ const I18N_RE = [
   [/^Máximo de (\d+) imagens\.$/, 'Up to {1} images.', 'Máximo de {1} imágenes.'],
   [/^Opções demais em "(.+)"\.$/, 'Too many options in "{1}".', 'Demasiadas opciones en "{1}".'],
   [/^Opção inválida em "(.+)"\.$/, 'Invalid option in "{1}".', 'Opción inválida en "{1}".'],
+  [/^Imagem grande demais \((\d+x\d+)\)\. O máximo é (\d+)px de cada lado\.$/, 'Image too large ({1}). The maximum is {2}px on each side.', 'Imagen demasiado grande ({1}). El máximo es {2}px de cada lado.'],
 ];

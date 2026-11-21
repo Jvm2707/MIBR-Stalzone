@@ -10,6 +10,14 @@ const ATT = { presente: 'presença', faltou: 'falta', justificou: 'falta justifi
 const RSVP = ['vai', 'talvez', 'nao'];
 const ROLES = ['admin', 'lider_squad'];
 const MAX_POR_HORA = 3;
+// Limites de imagem. O navegador já comprime, mas a barreira de verdade é aqui (o navegador pode ser burlado).
+const IMG_MAX_BYTES = 1e6; // cada imagem
+const ENVIO_MAX_BYTES = 5e6; // soma das imagens de um envio
+const IMG_MAX_LADO = 4096; // pixels, em qualquer lado
+const IMGS_POR_ENVIO = 4; // registro, gear, placar
+const IMGS_POR_POST = 8; // táticas e avisos
+const GEAR_PRINT_TTL = 60 * 86400; // prints de gear de atualizações antigas somem em 60 dias
+const POSTADO_TTL = 400 * 86400; // memória do "já postado no Discord" (anti-repost)
 // Links, convites e menções em massa ficam de fora de qualquer texto público.
 const PROIBIDO = /https?:|www\.|t\.me|telegram|discord\.gg|discord(app)?\.com\/invite|@everyone|@here/i;
 const DEFAULT_CONFIG = {
@@ -22,8 +30,20 @@ const DEFAULT_CONFIG = {
     { nome: 'Sniper', desc: 'Joga à distância: controla as linhas de visão, avisa onde o inimigo está e derruba quem tenta atravessar.' },
     { nome: 'Tank', desc: 'Escolhe um lugar e não sai dele: segura o ponto, aguenta a pressão e é o último a cair.' },
   ],
+  gearTipos: ['Speed', 'Tank', 'Híbrido'],
+  modos: { qui: 'Torneio', sex: 'Torneio', sab: 'Torneio', dom: 'Base Capture' }, // modo de guerra por dia da semana
+  seasons: [], // [{ id, nome, inicio: 'AAAA-MM-DD', fim: 'AAAA-MM-DD' }]
+  seasonAtual: '',
+  inativoFaltas: 3, // faltas seguidas pra virar inativo
+  inativoDias: 14, // dias sem presença pra virar inativo
+  // o que o Worker posta sozinho no Discord (os 3 primeiros já existiam, ficam ligados)
+  discord: { registro: true, gear: true, apply: true, kdGame: false, kdDia: false, presenca: false, tatica: false },
 };
 const TIPOS_POST = ['tatica', 'aviso'];
+// Season de uma data: a que cobre o dia; senão a marcada como atual (registros antigos são deduzidos pela data).
+const seasonDe = (cfg, date) => cfg.seasons.find((s) => s.inicio <= date && date <= s.fim)?.id || cfg.seasonAtual || '';
+const hoje = () => new Date().toISOString().slice(0, 10);
+const int = (v, max) => Math.max(0, Math.min(max, Math.round(+v) || 0));
 const DEFAULT_TAGS = ['bom player', 'promessa', 'tóxico'];
 
 class HttpError extends Error {
@@ -69,21 +89,44 @@ export default {
       Vary: 'Origin',
     };
     let res;
+    const uso = contarUso(env);
     if (req.method === 'OPTIONS') res = new Response(null, { status: 204 });
     else {
       try {
-        res = await route(req, env, ctx);
+        res = await route(req, uso.env, ctx);
       } catch (e) {
         if (e instanceof HttpError) res = json({ error: e.message }, e.status);
         else { console.error(e); res = json({ error: 'Erro interno. Tente de novo.' }, 500); }
       }
     }
+    ctx.waitUntil(uso.salvar().catch((e) => console.error('uso', e)));
     res = new Response(res.body, res);
     for (const [k, v] of Object.entries(cors)) res.headers.set(k, v);
     res.headers.set('X-Content-Type-Options', 'nosniff');
     return res;
   },
+  // Cron (wrangler.toml): backup semanal pro Discord. Sem o secret, não faz nada.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(enviarBackup(env).catch((e) => console.error('backup', e)));
+  },
 };
+
+// Conta gravações e remoções no KV (o grátis permite 1000/dia). Custa 1 gravação a mais por pedido que gravou algo.
+function contarUso(env) {
+  let n = 0;
+  const KV = {
+    get: (...a) => env.KV.get(...a), getWithMetadata: (...a) => env.KV.getWithMetadata(...a), list: (...a) => env.KV.list(...a),
+    put: (...a) => { n++; return env.KV.put(...a); }, delete: (...a) => { n++; return env.KV.delete(...a); },
+  };
+  return {
+    env: { ...env, KV },
+    async salvar() {
+      if (!n) return;
+      const k = 'uso:' + hoje();
+      await env.KV.put(k, String(+((await env.KV.get(k)) || 0) + n + 1), { expirationTtl: 2 * 86400 });
+    },
+  };
+}
 
 async function route(req, env, ctx) {
   const url = new URL(req.url);
@@ -94,7 +137,7 @@ async function route(req, env, ctx) {
   if (m === 'GET' && p === '/api/squads') {
     const squads = await listVals(env, 'squad:');
     return json(squads.map((s) => ({
-      id: s.id, nome: s.nome, estilo: s.estilo, lider: s.lider, funcoes: s.funcoes || [],
+      id: s.id, nome: s.nome, estilo: s.estilo, lider: s.lider, funcoes: s.funcoes || [], builds: s.builds || [],
       fixos: s.fixos.filter((f) => !f.reserva).map((f) => f.nick),
       reservas: s.fixos.filter((f) => f.reserva).map((f) => f.nick),
     })));
@@ -113,7 +156,8 @@ async function route(req, env, ctx) {
 }
 
 async function getConfig(env) {
-  return { ...DEFAULT_CONFIG, ...(await getJ(env, 'config')) };
+  const c = await getJ(env, 'config');
+  return { ...DEFAULT_CONFIG, ...c, discord: { ...DEFAULT_CONFIG.discord, ...c?.discord } };
 }
 
 async function getImage(env, id) {
@@ -151,26 +195,110 @@ function sniff(b) {
   return null;
 }
 
+// Largura e altura lidas do cabeçalho do arquivo (sem decodificar a imagem). null = cabeçalho ilegível.
+function dimensoes(b, type) {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  try {
+    if (type === 'image/png') return [dv.getUint32(16), dv.getUint32(20)];
+    if (type === 'image/webp') {
+      const tag = String.fromCharCode(...b.slice(12, 16));
+      if (tag === 'VP8X') return [1 + (dv.getUint32(24, true) & 0xffffff), 1 + (dv.getUint32(27, true) & 0xffffff)];
+      if (tag === 'VP8L') { const v = dv.getUint32(21, true); return [1 + (v & 0x3fff), 1 + ((v >>> 14) & 0x3fff)]; }
+      if (tag === 'VP8 ') return [dv.getUint16(26, true) & 0x3fff, dv.getUint16(28, true) & 0x3fff];
+    }
+    if (type === 'image/jpeg') {
+      // anda pelos marcadores até o SOF, que guarda altura e largura
+      for (let i = 2; i + 9 < b.length;) {
+        if (b[i] !== 0xff) { i++; continue; }
+        const mk = b[i + 1];
+        if (mk >= 0xc0 && mk <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(mk)) return [dv.getUint16(i + 7), dv.getUint16(i + 5)];
+        if (mk === 0xff || mk === 0x01 || (mk >= 0xd0 && mk <= 0xd8)) { i += mk === 0xff ? 1 : 2; continue; }
+        i += 2 + dv.getUint16(i + 2);
+      }
+    }
+  } catch { /* arquivo cortado */ }
+  return null;
+}
+
 async function readImages(fd, max) {
   const files = fd.getAll('prints').filter((f) => typeof f !== 'string' && f.size);
   if (files.length > max) fail(400, `Máximo de ${max} imagens.`);
+  if (files.reduce((s, f) => s + f.size, 0) > ENVIO_MAX_BYTES) fail(413, `As imagens juntas passam de ${ENVIO_MAX_BYTES / 1e6} MB.`);
   const out = [];
   for (const f of files) {
-    if (f.size > 1.5e6) fail(400, 'Cada imagem pode ter no máximo 1 MB.');
+    if (f.size > IMG_MAX_BYTES) fail(413, `Cada imagem pode ter no máximo ${IMG_MAX_BYTES / 1e6} MB.`);
     const buf = await f.arrayBuffer();
-    const type = sniff(new Uint8Array(buf));
+    const bytes = new Uint8Array(buf);
+    const type = sniff(bytes);
     if (!type) fail(400, 'Só imagens JPG, PNG ou WEBP.');
+    const dim = dimensoes(bytes, type);
+    if (!dim || !dim[0] || !dim[1]) fail(400, 'Não deu pra ler o tamanho de uma das imagens. Tente salvar a print de novo.');
+    if (Math.max(...dim) > IMG_MAX_LADO) fail(413, `Imagem grande demais (${dim[0]}x${dim[1]}). O máximo é ${IMG_MAX_LADO}px de cada lado.`);
     out.push({ buf, type });
   }
   return out;
 }
 
-const saveImages = (env, imgs) =>
+// Prints de gear das atualizações anteriores passam a sumir em 60 dias; as da última ficam sem prazo.
+// O KV não muda o prazo sozinho, então a imagem é gravada de novo com o prazo.
+async function expirarPrintsAntigas(env, m) {
+  for (const g of m.gear) {
+    if (!g.imgs.length || g.expira) continue;
+    for (const id of g.imgs) {
+      const { value, metadata } = await env.KV.getWithMetadata('img:' + id, 'arrayBuffer');
+      if (value) await env.KV.put('img:' + id, value, { metadata, expirationTtl: GEAR_PRINT_TTL });
+    }
+    g.expira = new Date(Date.now() + GEAR_PRINT_TTL * 1000).toISOString();
+  }
+}
+
+// ttl (segundos) é usado nas prints de placar, que somem sozinhas em 7 dias
+const saveImages = (env, imgs, ttl) =>
   Promise.all(imgs.map(async (im) => {
     const id = uuid();
-    await env.KV.put('img:' + id, im.buf, { metadata: { type: im.type } });
+    await env.KV.put('img:' + id, im.buf, { metadata: { type: im.type }, ...(ttl && { expirationTtl: ttl }) });
     return id;
   }));
+
+// Tipos de gear marcados no formulário, só os que existem na config.
+function gearTipos(fd, cfg) {
+  const tipos = list(fd, 'gearTipo', 'Tipo de gear', 10, 30);
+  if (tipos.some((x) => !cfg.gearTipos.includes(x))) fail(400, 'Tipo de gear inválido.');
+  return tipos;
+}
+
+// ---------- leitura do placar com Workers AI ----------
+// Testado com prints reais do Stalzone (placar de vitória e TAB): o Llama 4 Scout acertou 99% das linhas
+// (com o painel casando nick lido com 1 letra trocada); o Llama 3.2 Vision acertava só ~20%.
+const AI_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
+// O pedido descreve as duas telas do jogo e o que ignorar.
+const AI_PROMPT = `You are reading a screenshot of the scoreboard of the game Stalzone. It is one of two screens:
+1) "Final leaderboard" (after a win): a table under the 3D characters with the columns: position, nick, K, D, A, Treasury, Score, Rank.
+2) "Battle Report" (TAB): a table on the right side with the columns: position, nick, K, D, A, Treasury, Score, Rank. IGNORE the left panel (Points Advantage, Points Captured, Kills/Deaths/Help boxes).
+Read EVERY row of the table, from top to bottom, one by one. Do not skip rows and do not invent rows.
+For each row, return:
+- "nick": the player name exactly as written, but WITHOUT the clan tag in square brackets (for example "[Made in Brazil] Jaguison" becomes "Jaguison").
+- "kills": the number in the K column, "deaths": the number in the D column, "assists": the number in the A column.
+Ignore the Treasury, Score and Rank columns (they are big numbers and words like Sergeant, Officer).
+Example: the row "1  [Made in Brazil] PlayerX  26  12  7  34430  8834  Officer" becomes {"nick":"PlayerX","kills":26,"deaths":12,"assists":7}.
+Reply with ONLY a JSON array, no other text, no markdown: [{"nick":"...","kills":0,"deaths":0,"assists":0}]`;
+async function lerPlacar(env, buf, type) {
+  // o modelo recebe a imagem como data URL (base64), montado em pedaços pra não estourar a pilha
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  const out = await env.AI.run(AI_MODEL, {
+    messages: [{ role: 'user', content: [{ type: 'text', text: AI_PROMPT }, { type: 'image_url', image_url: { url: `data:${type};base64,${btoa(bin)}` } }] }],
+    max_tokens: 2048,
+  });
+  const raw = out?.response;
+  const arr = Array.isArray(raw) ? raw : JSON.parse(String(raw ?? '').match(/\[[\s\S]*\]/)?.[0] ?? 'null');
+  if (!Array.isArray(arr)) throw new Error('a IA não devolveu uma lista');
+  return arr.filter((r) => typeof r?.nick === 'string' && r.nick.trim()).slice(0, 40).map((r) => ({
+    nick: clip(r.nick.replace(/^\s*\[[^\]]*\]\s*/, ''), 32), // tira a tag do clã se a IA deixar passar
+    kills: int(r.kills, 999), deaths: int(r.deaths, 999), assists: int(r.assists, 999),
+  }));
+}
 
 async function checkTurnstile(env, token, ip) {
   if (!token) fail(400, 'Confirme o captcha antes de enviar.');
@@ -183,7 +311,7 @@ async function checkTurnstile(env, token, ip) {
 
 async function publicSubmit(kind, req, env, ctx) {
   const ip = req.headers.get('cf-connecting-ip') || 'local';
-  if (+req.headers.get('content-length') > 8e6) fail(413, 'Envio grande demais.');
+  if (+req.headers.get('content-length') > ENVIO_MAX_BYTES + 1e6) fail(413, 'Envio grande demais.'); // folga pros campos de texto
   const fd = await req.formData().catch(() => fail(400, 'Formulário inválido.'));
   await checkTurnstile(env, fd.get('cf-turnstile-response'), ip);
 
@@ -239,9 +367,13 @@ async function register(fd, env, ctx) {
     tags: [],
     gear: [],
   };
+  const cfg = await getConfig(env);
+  m.gearTipos = gearTipos(fd, cfg);
   const gearTxt = txt(fd, 'gear', 'Gear', 1000);
-  const imgs = await readImages(fd, 4);
-  if (gearTxt || imgs.length) m.gear.push({ data: m.criadoEm, texto: gearTxt, imgs: await saveImages(env, imgs) });
+  const imgs = await readImages(fd, IMGS_POR_ENVIO);
+  if (gearTxt || imgs.length || m.gearTipos.length) {
+    m.gear.push({ data: m.criadoEm, season: seasonDe(cfg, hoje()), tipos: m.gearTipos, texto: gearTxt, imgs: await saveImages(env, imgs) });
+  }
 
   await putJ(env, 'member:' + m.id, m);
   await putJ(env, key, m.id);
@@ -259,22 +391,26 @@ async function register(fd, env, ctx) {
     ['Squad desejado', sq?.nome],
     ['Já foi de clã no Stalzone', cla === 'sim' ? `Sim: ${m.claQual || '-'}` : 'Não'],
     ['Já jogou FPS', fps === 'sim' ? `Sim: ${m.fpsQual || '-'}` : 'Não'],
-    ['Microfone', mic === 'sim' ? 'Sim' : 'Não'], ['Gear', gearTxt], ['Sobre', m.sobre],
-  ], imgs).catch((e) => console.error('discord', e)));
+    ['Microfone', mic === 'sim' ? 'Sim' : 'Não'], ['Tipo de gear', m.gearTipos.join(', ')], ['Gear', gearTxt], ['Sobre', m.sobre],
+  ], imgs, 'registro').catch((e) => console.error('discord', e)));
   return json({ ok: true });
 }
 
 async function gear(fd, env, ctx) {
   const nick = txt(fd, 'nick', 'Nick', 32, true);
+  const cfg = await getConfig(env);
+  const tipos = gearTipos(fd, cfg);
   const texto = txt(fd, 'gear', 'Gear', 1000);
-  const imgs = await readImages(fd, 4);
-  if (!texto && !imgs.length) fail(400, 'Escreva o gear ou mande pelo menos um print.');
+  const imgs = await readImages(fd, IMGS_POR_ENVIO);
+  if (!texto && !imgs.length && !tipos.length) fail(400, 'Escreva o gear ou mande pelo menos um print.');
   const id = await getJ(env, 'nick:' + nick.toLowerCase());
   const m = id && (await getJ(env, 'member:' + id));
   if (!m) fail(404, 'Nick não encontrado. Faça o registro primeiro.');
-  m.gear.push({ data: new Date().toISOString(), texto, imgs: await saveImages(env, imgs) });
+  if (imgs.length) await expirarPrintsAntigas(env, m);
+  m.gear.push({ data: new Date().toISOString(), season: seasonDe(cfg, hoje()), tipos, texto, imgs: await saveImages(env, imgs) });
+  if (tipos.length) m.gearTipos = tipos; // o tipo mais recente é o que vale na ficha e no filtro
   await putJ(env, 'member:' + m.id, m);
-  ctx.waitUntil(discord(env, `Gear atualizado: ${m.nick}`, [['Gear', texto]], imgs).catch((e) => console.error('discord', e)));
+  ctx.waitUntil(discord(env, `Gear atualizado: ${m.nick}`, [['Tipo de gear', tipos.join(', ')], ['Gear', texto]], imgs, 'gear').catch((e) => console.error('discord', e)));
   return json({ ok: true });
 }
 
@@ -291,7 +427,7 @@ async function apply(fd, env, ctx) {
     status: 'pendente',
   };
   await putJ(env, 'apply:' + a.id, a);
-  ctx.waitUntil(discord(env, `Apply pro squad ${sq.nome}: ${a.nick}`, [['Mensagem', a.msg]], []).catch((e) => console.error('discord', e)));
+  ctx.waitUntil(discord(env, `Apply pro squad ${sq.nome}: ${a.nick}`, [['Mensagem', a.msg]], [], 'apply').catch((e) => console.error('discord', e)));
   return json({ ok: true });
 }
 
@@ -299,26 +435,159 @@ async function apply(fd, env, ctx) {
 const webhookUrl = async (env) => (await env.KV.get('webhook')) || env.DISCORD_WEBHOOK || '';
 const WEBHOOK_RE = /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+$/;
 
-async function discord(env, title, fields, imgs) {
+// Resultados e presença podem ir pra um canal separado; sem esse secret, vão pro principal.
+const resultsUrl = async (env) => env.DISCORD_RESULTS_WEBHOOK || (await webhookUrl(env));
+
+// Divide em embeds de até 25 campos e ~5500 caracteres (o Discord aceita 25 campos e 6000 por embed).
+function montarEmbeds(title, fields, descricao = '') {
+  const limpos = fields.filter(([, v]) => v !== '' && v != null)
+    .map(([name, v]) => ({ name: String(name).slice(0, 256), value: String(v).slice(0, 1024), inline: String(v).length < 40 }));
+  const grupos = [];
+  let atual = null;
+  let tam = 0;
+  for (const f of limpos) {
+    const t = f.name.length + f.value.length;
+    if (!atual || atual.length >= 25 || tam + t > 5500) { atual = []; grupos.push(atual); tam = title.length + descricao.length + 20; }
+    atual.push(f);
+    tam += t;
+  }
+  if (!grupos.length) grupos.push([]);
+  return grupos.map((fs, i) => ({
+    title: (grupos.length > 1 ? `${title} (${i + 1}/${grupos.length})` : title).slice(0, 256),
+    ...(i === 0 && descricao && { description: descricao.slice(0, 2000) }),
+    color: 0x009c3b, fields: fs, timestamp: new Date().toISOString(),
+  }));
+}
+
+// Uma mensagem por embed (fica longe do limite de 6000 por mensagem). Prints vão só na primeira.
+async function postar(url, embeds, imgs = []) {
+  let ok = true;
+  for (const [i, embed] of embeds.entries()) {
+    const fd = new FormData();
+    fd.append('payload_json', JSON.stringify({ allowed_mentions: { parse: [] }, embeds: [embed] })); // nunca pinga ninguém
+    if (i === 0) imgs.forEach((im, n) => fd.append(`files[${n}]`, new Blob([im.buf], { type: im.type }), `print${n + 1}.${im.type.split('/')[1]}`));
+    const r = await fetch(url, { method: 'POST', body: fd });
+    if (!r.ok) { ok = false; console.error('discord', r.status, await r.text()); }
+  }
+  return ok;
+}
+
+// tipo = interruptor da config (registro, gear, apply); sem tipo = sempre (ex.: teste do webhook)
+async function discord(env, title, fields, imgs, tipo) {
+  if (tipo && !(await getConfig(env)).discord[tipo]) return;
   const url = await webhookUrl(env);
   if (!url) return;
-  const fd = new FormData();
-  fd.append('payload_json', JSON.stringify({
-    allowed_mentions: { parse: [] }, // nunca pinga ninguém
-    embeds: [{
-      title: title.slice(0, 256),
-      color: 0x009c3b,
-      fields: fields.filter(([, v]) => v).map(([name, v]) => {
-        const value = String(v).slice(0, 1024);
-        return { name, value, inline: value.length < 40 };
-      }),
-      timestamp: new Date().toISOString(),
-    }],
-  }));
-  imgs.forEach((im, i) => fd.append(`files[${i}]`, new Blob([im.buf], { type: im.type }), `print${i + 1}.${im.type.split('/')[1]}`));
-  const r = await fetch(url, { method: 'POST', body: fd });
-  if (!r.ok) console.error('discord', r.status, await r.text());
-  return r.ok;
+  return postar(url, montarEmbeds(title, fields), imgs);
+}
+
+// ---------- relatórios pro Discord ----------
+const kdaTxt = (s) => `Kill (${s.k}) / Death (${s.d}) / Assist (${s.a}) / Rating (${((s.k + s.a) / Math.max(s.d, 1)).toFixed(2)})`;
+// soma por jogador: [{ nick, k, d, a, jogos }], na ordem do painel (maior média de kills por game; empate: maior Rating)
+function somarJogadores(results) {
+  const por = {};
+  for (const r of results) for (const l of r.linhas) {
+    const s = (por[l.memberId] ||= { nick: l.nick, k: 0, d: 0, a: 0, jogos: 0 });
+    s.k += l.kills; s.d += l.deaths; s.a += l.assists; s.jogos++;
+  }
+  const rt = (s) => (s.k + s.a) / Math.max(s.d, 1);
+  return Object.values(por).sort((x, y) => y.k / y.jogos - x.k / x.jogos || rt(y) - rt(x));
+}
+const nomeSeasonW = (cfg, id) => cfg.seasons.find((s) => s.id === id)?.nome || 'sem season';
+const daSeasonAtual = (cfg, x) => (x.season || seasonDe(cfg, x.date)) === cfg.seasonAtual;
+// lista de nomes dividida em campos de até 1000 caracteres
+function camposLista(titulo, nomes) {
+  if (!nomes.length) return [[titulo, '-']];
+  const out = [];
+  let atual = '';
+  for (const n of nomes) {
+    if ((atual + ', ' + n).length > 1000) { out.push(atual); atual = n; } else atual = atual ? `${atual}, ${n}` : n;
+  }
+  out.push(atual);
+  return out.map((v, i) => [i ? `${titulo} (cont.)` : titulo, v]);
+}
+// inativo = X faltas seguidas ou Y dias sem presença (o painel calcula igual)
+function ehInativo(m, att, cfg) {
+  if (!['teste', 'membro', 'veterano'].includes(m.status)) return false;
+  const marcadas = att.filter((a) => a.marks[m.id]?.s).sort((a, b) => b.date.localeCompare(a.date));
+  let seguidas = 0;
+  for (const a of marcadas) { if (a.marks[m.id].s === 'faltou') seguidas++; else break; }
+  const ultima = marcadas.find((a) => a.marks[m.id].s === 'presente')?.date || m.criadoEm.slice(0, 10);
+  return seguidas >= cfg.inativoFaltas || (Date.parse(hoje()) - Date.parse(ultima)) / 864e5 >= cfg.inativoDias;
+}
+
+const REL = {
+  kdGame: (r) => ({
+    title: `KD do game ${r.game} de ${brDate(r.date)}${r.modo ? ` (${r.modo})` : ''}`,
+    fields: somarJogadores([r]).map((s) => [s.nick, kdaTxt(s)]),
+  }),
+  kdDia: (date, results) => {
+    const doDia = results.filter((r) => r.date === date);
+    if (!doDia.length) fail(404, 'Nenhum game salvo nesse dia.');
+    const js = somarJogadores(doDia);
+    return {
+      title: `KD do dia ${brDate(date)} (${doDia.length} ${doDia.length === 1 ? 'game' : 'games'})`,
+      descricao: `Top 3: ${js.slice(0, 3).map((s, i) => `${i + 1}. ${s.nick}`).join(', ')}`,
+      fields: js.map((s) => [s.nick, kdaTxt(s)]),
+    };
+  },
+  presenca: (date, rec, nicks) => {
+    const quem = (st) => Object.entries(rec.marks).filter(([id, mk]) => mk.s === st && nicks[id]).map(([id]) => nicks[id]).sort();
+    // a justificativa é privada: só os nomes vão pro Discord
+    return {
+      title: `Presença de ${brDate(date)}`,
+      fields: [...camposLista(`Presentes (${quem('presente').length})`, quem('presente')),
+        ...camposLista(`Faltaram (${quem('faltou').length})`, quem('faltou')),
+        ...camposLista(`Justificaram (${quem('justificou').length})`, quem('justificou'))],
+    };
+  },
+  ranking: (cfg, results, modo) => ({
+    title: `Ranking de KDA: ${nomeSeasonW(cfg, cfg.seasonAtual)}${modo ? ` (${modo})` : ''}`,
+    fields: somarJogadores(results.filter((r) => daSeasonAtual(cfg, r) && (!modo || r.modo === modo))).slice(0, 10)
+      .map((s, i) => [`${i + 1}. ${s.nick}`, `${kdaTxt(s)} em ${s.jogos} ${s.jogos === 1 ? 'game' : 'games'}`]),
+  }),
+  frequencia: (cfg, att, members, comInativos) => {
+    const daSeason = att.filter((a) => daSeasonAtual(cfg, a));
+    const ativos = members.filter((m) => ['teste', 'membro', 'veterano'].includes(m.status));
+    const freq = ativos.map((m) => {
+      const ms = daSeason.map((a) => a.marks[m.id]?.s).filter(Boolean);
+      return { nick: m.nick, p: ms.filter((s) => s === 'presente').length, t: ms.length };
+    }).filter((x) => x.t).sort((a, b) => b.p / b.t - a.p / a.t || b.p - a.p).slice(0, 10);
+    return {
+      title: `Frequência: ${nomeSeasonW(cfg, cfg.seasonAtual)}`,
+      fields: [...freq.map((x, i) => [`${i + 1}. ${x.nick}`, `${Math.round((100 * x.p) / x.t)}% (${x.p}/${x.t})`]),
+        ...(comInativos ? camposLista('Inativos', ativos.filter((m) => ehInativo(m, att, cfg)).map((m) => m.nick).sort()) : [])],
+    };
+  },
+  semana: (results) => {
+    const desde = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10);
+    const rs = results.filter((r) => r.date >= desde && r.date <= hoje());
+    const js = somarJogadores(rs);
+    const tot = js.reduce((t, s) => ({ k: t.k + s.k, d: t.d + s.d, a: t.a + s.a }), { k: 0, d: 0, a: 0 });
+    return {
+      title: `Resumo da semana (${brDate(desde)} a ${brDate(hoje())})`,
+      fields: [['Games', String(rs.length)], ['KDA médio do clã', rs.length ? kdaTxt(tot) : '-'],
+        ['Destaque da semana', js[0] ? `${js[0].nick}: ${kdaTxt(js[0])}` : '-']],
+    };
+  },
+};
+
+// Postagem automática: respeita o interruptor e não reposta o mesmo game/dia/post.
+// Devolve 'postado' | 'ja' (já foi postado: o painel oferece "repostar") | 'desligado' | 'sem-webhook' | 'erro'.
+async function autoPost(env, tipo, id, gerar) {
+  try {
+    const cfg = await getConfig(env);
+    if (!cfg.discord[tipo]) return 'desligado';
+    if (await env.KV.get(`postado:${tipo}:${id}`)) return 'ja';
+    const url = await (tipo === 'tatica' ? webhookUrl(env) : resultsUrl(env));
+    if (!url) return 'sem-webhook';
+    const r = await gerar();
+    if (!(await postar(url, montarEmbeds(r.title, r.fields, r.descricao)))) return 'erro';
+    await env.KV.put(`postado:${tipo}:${id}`, '1', { expirationTtl: POSTADO_TTL });
+    return 'postado';
+  } catch (e) {
+    console.error('autoPost', tipo, e);
+    return 'erro';
+  }
 }
 
 // ---------- RSVP do bot ----------
@@ -433,7 +702,44 @@ async function addTags(env, tags) {
   if (merged.length !== all.length) await putJ(env, 'tags', merged);
 }
 
-const BACKUP_PREFIXES = ['config', 'tags', 'member:', 'nick:', 'squad:', 'apply:', 'post:', 'att:', 'rsvp:', 'log:'];
+// Funções e builds (tipo de gear + quantidade opcional) que o squad procura.
+function procura(sq, b) {
+  if (Array.isArray(b.funcoes)) sq.funcoes = [...new Set(b.funcoes.map((f) => clip(f, 40)).filter(Boolean))].slice(0, 10);
+  if (Array.isArray(b.builds)) {
+    const vistos = new Set();
+    sq.builds = b.builds.map((x) => ({ tipo: clip(x?.tipo, 30), qtd: x?.qtd ? int(x.qtd, 20) || null : null }))
+      .filter((x) => x.tipo && !vistos.has(x.tipo) && vistos.add(x.tipo)).slice(0, 10);
+  }
+  sq.funcoes ||= [];
+  sq.builds ||= [];
+}
+
+async function backupDados(env) {
+  const out = {};
+  for (const prefix of BACKUP_PREFIXES) {
+    let cursor;
+    do {
+      const res = await env.KV.list({ prefix, cursor });
+      for (const k of res.keys) out[k.name] = await getJ(env, k.name);
+      cursor = res.list_complete ? null : res.cursor;
+    } while (cursor);
+  }
+  return out;
+}
+
+// Manda o mesmo JSON do backup manual como arquivo pro webhook privado. Sem o secret, não faz nada.
+async function enviarBackup(env) {
+  if (!env.DISCORD_BACKUP_WEBHOOK) return false;
+  const dados = await backupDados(env);
+  const fd = new FormData();
+  fd.append('payload_json', JSON.stringify({ content: `Backup do site do clã: ${Object.keys(dados).length} itens (sem imagens).`, allowed_mentions: { parse: [] } }));
+  fd.append('files[0]', new Blob([JSON.stringify(dados)], { type: 'application/json' }), `backup-cla-${hoje()}.json`);
+  const r = await fetch(env.DISCORD_BACKUP_WEBHOOK, { method: 'POST', body: fd });
+  if (!r.ok) throw new Error('Discord recusou o backup: ' + r.status);
+  return true;
+}
+
+const BACKUP_PREFIXES = ['config', 'tags', 'member:', 'nick:', 'squad:', 'apply:', 'post:', 'att:', 'rsvp:', 'log:', 'res:'];
 
 // ---------- painel ----------
 
@@ -502,6 +808,40 @@ async function admin(req, env, path, m, url) {
       }
       const oldSquad = mem.squad;
       if (isAdmin) {
+        // dados do registro (só admin): vale o mesmo limite de tamanho do formulário público
+        if (b.dados) {
+          const d = b.dados;
+          const sn = (v) => (v === 'sim' ? 'sim' : 'nao');
+          const nick = clip(d.nick, 32);
+          if (!nick) fail(400, 'O nick não pode ficar vazio.');
+          if (nick.toLowerCase() !== mem.nick.toLowerCase()) {
+            if (await env.KV.get('nick:' + nick.toLowerCase())) fail(409, 'Já existe um membro com esse nick.');
+            await env.KV.delete('nick:' + mem.nick.toLowerCase());
+            await putJ(env, 'nick:' + nick.toLowerCase(), mem.id);
+            squadMudou = true; // o nick aparece na lista pública do squad
+          }
+          if (d.idade && !(/^\d+$/.test(d.idade) && +d.idade >= 10 && +d.idade <= 99)) fail(400, 'Idade precisa ser um número entre 10 e 99.');
+          if (!/^GMT[+-]\d{1,2}(:\d{2})?$/.test(d.fuso)) fail(400, 'Fuso inválido.');
+          const dias = Array.isArray(d.dias) ? d.dias.filter((x) => DIAS.includes(x)) : mem.dias;
+          const arr = (v, n, len) => (Array.isArray(v) ? [...new Set(v.map((x) => clip(x, len)).filter(Boolean))].slice(0, n) : []);
+          Object.assign(mem, {
+            nick, discord: clip(d.discord, 40), idade: clip(d.idade, 3), pais: clip(d.pais, 60), fuso: d.fuso, dias,
+            playstyles: arr(d.playstyles, 10, 40), playstyleOutro: clip(d.playstyleOutro, 100), gearTipos: arr(d.gearTipos, 10, 30),
+            cla: sn(d.cla), claQual: clip(d.claQual, 200), fps: sn(d.fps), fpsQual: clip(d.fpsQual, 200), mic: sn(d.mic), sobre: clip(d.sobre, 1000),
+          });
+        }
+        // um item do histórico de gear: editar texto/tipos ou apagar (com as prints)
+        if (b.gearEdit) {
+          const g = mem.gear[b.gearEdit.idx];
+          if (!Number.isInteger(b.gearEdit.idx) || !g) fail(404, 'Item de gear não encontrado.');
+          if (b.gearEdit.remover) {
+            await Promise.all(g.imgs.map((i) => env.KV.delete('img:' + i)));
+            mem.gear.splice(b.gearEdit.idx, 1);
+          } else {
+            g.texto = clip(b.gearEdit.texto, 1000);
+            g.tipos = Array.isArray(b.gearEdit.tipos) ? [...new Set(b.gearEdit.tipos.map((x) => clip(x, 30)).filter(Boolean))].slice(0, 10) : g.tipos || [];
+          }
+        }
         if (b.status !== undefined && b.status !== mem.status) {
           if (!STATUS.includes(b.status)) fail(400, 'Status inválido.');
           mem.status = b.status;
@@ -519,7 +859,7 @@ async function admin(req, env, path, m, url) {
         const members = (await listVals(env, 'member:')).map((x) => (x.id === mem.id ? mem : x));
         await syncSquads(env, [oldSquad, mem.squad], members);
       }
-      await log(env, u, `editou a ficha de ${mem.nick}`);
+      await log(env, u, b.gearEdit ? `${b.gearEdit.remover ? 'apagou' : 'editou'} um gear de ${mem.nick}` : b.dados ? `editou o registro de ${mem.nick}` : `editou a ficha de ${mem.nick}`);
       return json(mem);
     }
 
@@ -535,6 +875,7 @@ async function admin(req, env, path, m, url) {
       if (!isDate(b.date)) fail(400, 'Data inválida.');
       // shortcut: uma chave por data; dois admins salvando a mesma data no mesmo minuto podem se sobrescrever.
       const rec = (await getJ(env, 'att:' + b.date)) || { date: b.date, marks: {} };
+      rec.season = seasonDe(await getConfig(env), b.date);
       const members = Object.fromEntries((await listVals(env, 'member:')).filter(canSee).map((x) => [x.id, x]));
       const lines = [];
       for (const [id, mk] of Object.entries(b.marks || {})) {
@@ -554,7 +895,9 @@ async function admin(req, env, path, m, url) {
       }
       await putJ(env, 'att:' + b.date, rec);
       if (lines.length) await log(env, u, `marcou ${lines.join(', ')} em ${brDate(b.date)}`);
-      return json({ ok: true }); // não devolve rec: o líder veria marcas de outros squads
+      const discPres = await autoPost(env, 'presenca', b.date, async () =>
+        REL.presenca(b.date, rec, Object.fromEntries((await listVals(env, 'member:')).map((x) => [x.id, x.nick]))));
+      return json({ ok: true, discord: { presenca: discPres } }); // não devolve rec: o líder veria marcas de outros squads
     }
     case 'GET rsvp': {
       if (!isDate(q('date'))) fail(400, 'Data inválida.');
@@ -573,7 +916,7 @@ async function admin(req, env, path, m, url) {
       if (!sq) fail(404, 'Squad não encontrado.');
       sq.nome = clip(b.nome, 40) || fail(400, 'Dê um nome ao squad.');
       sq.estilo = clip(b.estilo, 100);
-      sq.funcoes = Array.isArray(b.funcoes) ? [...new Set(b.funcoes.map((f) => clip(f, 40)).filter(Boolean))].slice(0, 10) : sq.funcoes || [];
+      procura(sq, b);
       sq.lider = clip(b.lider, 40);
       await putJ(env, 'squad:' + sq.id, sq);
       if (Array.isArray(b.fixos)) {
@@ -591,6 +934,17 @@ async function admin(req, env, path, m, url) {
       }
       await log(env, u, `${b.id ? 'editou' : 'criou'} o squad ${sq.nome}`);
       return json(await getJ(env, 'squad:' + sq.id));
+    }
+    // o que o squad procura: admin ou o líder do próprio squad
+    case 'POST squad-procura': {
+      const b = await body();
+      const sq = isId(b.id) && (await getJ(env, 'squad:' + b.id));
+      if (!sq) fail(404, 'Squad não encontrado.');
+      need(isAdmin || (isLeader && sq.id === u.squad));
+      procura(sq, b);
+      await putJ(env, 'squad:' + sq.id, sq);
+      await log(env, u, `editou o que o squad ${sq.nome} procura`);
+      return json(sq);
     }
     case 'DELETE squad': {
       need(isAdmin);
@@ -636,14 +990,15 @@ async function admin(req, env, path, m, url) {
     case 'POST upload': {
       need(isAdmin);
       const fd = await req.formData().catch(() => fail(400, 'Formulário inválido.'));
-      return json(await saveImages(env, await readImages(fd, 10)));
+      return json(await saveImages(env, await readImages(fd, IMGS_POR_POST)));
     }
     case 'POST post': {
       need(isAdmin);
       const b = await body();
       const old = b.id ? await getJ(env, 'post:' + b.id) : null;
       if (b.id && !old) fail(404, 'Post não encontrado.');
-      const imgs = Array.isArray(b.imgs) ? b.imgs.filter(isId).slice(0, 30) : [];
+      const imgs = Array.isArray(b.imgs) ? b.imgs.filter(isId) : [];
+      if (imgs.length > IMGS_POR_POST) fail(400, `Cada post pode ter no máximo ${IMGS_POR_POST} imagens.`);
       const post = {
         id: old?.id || uuid(),
         titulo: clip(b.titulo, 120) || fail(400, 'Dê um título ao post.'),
@@ -655,6 +1010,9 @@ async function admin(req, env, path, m, url) {
         autor: old?.autor || u.name,
       };
       await putJ(env, 'post:' + post.id, post);
+      if (post.publico && post.tipo === 'tatica') {
+        await autoPost(env, 'tatica', post.id, () => ({ title: `Nova tática: ${post.titulo}`, fields: [['Link', env.SITE_URL ? env.SITE_URL + '#taticas' : '']] }));
+      }
       await Promise.all((old?.imgs || []).filter((i) => !imgs.includes(i)).map((i) => env.KV.delete('img:' + i)));
       await log(env, u, `${old ? 'editou' : 'criou'} ${post.tipo === 'aviso' ? 'o aviso' : 'a tática'} "${post.titulo}"`);
       return json(post);
@@ -711,6 +1069,75 @@ async function admin(req, env, path, m, url) {
       await log(env, u, `removeu o usuário ${name}`);
       return json({ ok: true });
     }
+    // ---- resultados / KDA: res:<data>:<game> ----
+    // admin vê e edita tudo; líder só as linhas dos membros do próprio squad
+    case 'POST upload-placar': {
+      need(isAdmin || isLeader);
+      const fd = await req.formData().catch(() => fail(400, 'Formulário inválido.'));
+      return json(await saveImages(env, await readImages(fd, IMGS_POR_ENVIO), 7 * 86400)); // somem em 7 dias
+    }
+    case 'POST ler-placar': {
+      need(isAdmin || isLeader);
+      const ids = (await body()).ids;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 4 || !ids.every(isId)) fail(400, 'Mande de 1 a 4 prints.');
+      if (!env.AI) fail(502, 'A leitura automática não está ativada no Worker. Preencha a tabela na mão.');
+      const linhas = [];
+      try {
+        for (const id of ids) {
+          const { value: buf, metadata } = await env.KV.getWithMetadata('img:' + id, 'arrayBuffer');
+          if (!buf) fail(404, 'Uma das prints já expirou. Envie de novo.');
+          linhas.push(...(await lerPlacar(env, buf, metadata?.type || 'image/jpeg')));
+        }
+      } catch (e) {
+        if (e instanceof HttpError) throw e;
+        console.error('ia', e);
+        fail(502, 'Não deu pra ler as prints (limite grátis da IA ou print difícil de ler). Preencha a tabela na mão.');
+      }
+      // a mesma pessoa em duas prints conta uma vez
+      const vistos = new Set();
+      return json(linhas.filter((l) => !vistos.has(l.nick.toLowerCase()) && vistos.add(l.nick.toLowerCase())));
+    }
+    case 'GET results': {
+      const all = await listVals(env, 'res:');
+      if (isAdmin) return json(all);
+      const mine = new Set((await listVals(env, 'member:')).filter(canSee).map((x) => x.id));
+      return json(all.map((r) => ({ ...r, linhas: r.linhas.filter((l) => mine.has(l.memberId)) })));
+    }
+    case 'POST result': {
+      need(isAdmin || isLeader);
+      const b = await body();
+      const game = +b.game;
+      if (!isDate(b.date) || ![1, 2, 3].includes(game)) fail(400, 'Escolha a data e o game (1, 2 ou 3).');
+      const key = `res:${b.date}:${game}`;
+      const old = await getJ(env, key);
+      const members = Object.fromEntries((await listVals(env, 'member:')).filter(canSee).map((x) => [x.id, x]));
+      const vistos = new Set();
+      const novas = (Array.isArray(b.linhas) ? b.linhas : []).slice(0, 60)
+        .filter((l) => members[l?.memberId] && !vistos.has(l.memberId) && vistos.add(l.memberId))
+        .map((l) => ({ memberId: l.memberId, nick: members[l.memberId].nick, kills: int(l.kills, 999), deaths: int(l.deaths, 999), assists: int(l.assists, 999) }));
+      // líder não apaga nem mexe nas linhas de quem não é do squad dele
+      const outras = (old?.linhas || []).filter((l) => !members[l.memberId]);
+      const rec = {
+        date: b.date, game, modo: clip(b.modo, 40) || old?.modo || '', season: seasonDe(await getConfig(env), b.date),
+        linhas: [...outras, ...novas], prints: Array.isArray(b.prints) ? b.prints.filter(isId).slice(0, 4) : old?.prints || [],
+        por: u.name, em: new Date().toISOString(),
+      };
+      await putJ(env, key, rec);
+      const disc = { kdGame: await autoPost(env, 'kdGame', `${b.date}:${game}`, () => REL.kdGame(rec)) };
+      // game 3 = último game do dia
+      if (game === 3) disc.kdDia = await autoPost(env, 'kdDia', b.date, async () => REL.kdDia(b.date, await listVals(env, 'res:')));
+      await log(env, u, `${old ? 'editou' : 'salvou'} o resultado de ${brDate(b.date)}, game ${game} (${rec.modo || 'sem modo'}): ${novas.length} ${novas.length === 1 ? "jogador" : "jogadores"}`);
+      return json({ ...(isAdmin ? rec : { ...rec, linhas: novas }), discord: disc });
+    }
+    case 'DELETE result': {
+      need(isAdmin);
+      const key = `res:${q('date')}:${q('game')}`;
+      if (!isDate(q('date')) || !(await env.KV.get(key))) fail(404, 'Resultado não encontrado.');
+      await env.KV.delete(key);
+      await log(env, u, `apagou o resultado de ${brDate(q('date'))}, game ${q('game')}`);
+      return json({ ok: true });
+    }
+
     // ---- webhook do Discord (admin e superadmin); o link inteiro nunca volta pro navegador ----
     case 'GET webhook': {
       need(isAdmin);
@@ -731,6 +1158,54 @@ async function admin(req, env, path, m, url) {
       if (!(await discord(env, 'Teste do site do clã', [['Enviado por', u.name]], []))) fail(502, 'O Discord recusou. Confira se o link está certo e se o webhook não foi apagado.');
       return json({ ok: true });
     }
+    case 'POST discord-config': {
+      need(isAdmin);
+      const b = await body();
+      const cfg = await getConfig(env);
+      for (const k of Object.keys(DEFAULT_CONFIG.discord)) if (typeof b.discord?.[k] === 'boolean') cfg.discord[k] = b.discord[k];
+      await putJ(env, 'config', cfg);
+      await log(env, u, 'mudou o que é postado no Discord');
+      return json(cfg.discord);
+    }
+    // postagem manual com prévia: previa=true só devolve os embeds, sem enviar
+    case 'POST discord-postar': {
+      need(isAdmin);
+      const b = await body();
+      const cfg = await getConfig(env);
+      const results = () => listVals(env, 'res:');
+      let r;
+      let marca = ''; // marca como postado pra não repostar sozinho depois
+      let nome;
+      if (b.tipo === 'kdDia') {
+        if (!isDate(b.date)) fail(400, 'Escolha o dia.');
+        r = REL.kdDia(b.date, await results()); marca = 'kdDia:' + b.date; nome = 'KD do dia ' + brDate(b.date);
+      } else if (b.tipo === 'kdGame') {
+        const rec = isDate(b.date) && (await getJ(env, `res:${b.date}:${+b.game}`));
+        if (!rec) fail(404, 'Game não encontrado.');
+        r = REL.kdGame(rec); marca = `kdGame:${b.date}:${+b.game}`; nome = `KD do game ${+b.game} de ${brDate(b.date)}`;
+      } else if (b.tipo === 'presenca') {
+        const rec = isDate(b.date) && (await getJ(env, 'att:' + b.date));
+        if (!rec) fail(404, 'Nenhuma presença salva nesse dia.');
+        r = REL.presenca(b.date, rec, Object.fromEntries((await listVals(env, 'member:')).map((x) => [x.id, x.nick])));
+        marca = 'presenca:' + b.date; nome = 'presença de ' + brDate(b.date);
+      } else if (b.tipo === 'ranking') {
+        if (!cfg.seasonAtual) fail(400, 'Marque a season atual na Config primeiro.');
+        r = REL.ranking(cfg, await results(), clip(b.modo, 40)); nome = 'ranking de KDA da season';
+      } else if (b.tipo === 'frequencia') {
+        if (!cfg.seasonAtual) fail(400, 'Marque a season atual na Config primeiro.');
+        r = REL.frequencia(cfg, await listVals(env, 'att:'), await listVals(env, 'member:'), !!b.inativos); nome = 'frequência da season';
+      } else if (b.tipo === 'semana') {
+        r = REL.semana(await results()); nome = 'resumo da semana';
+      } else fail(400, 'Tipo de postagem inválido.');
+      const embeds = montarEmbeds(r.title, r.fields, r.descricao);
+      if (b.previa) return json(embeds);
+      const url = await resultsUrl(env);
+      if (!url) fail(400, 'Nenhum webhook configurado. Salve o link na aba Discord.');
+      if (!(await postar(url, embeds))) fail(502, 'O Discord recusou a postagem. Confira o webhook.');
+      if (marca) await env.KV.put('postado:' + marca, '1', { expirationTtl: POSTADO_TTL });
+      await log(env, u, `postou ${nome} no Discord`);
+      return json({ ok: true, mensagens: embeds.length });
+    }
     case 'GET log':
       need(isSuper);
       return json(await listVals(env, 'log:', 300));
@@ -739,28 +1214,46 @@ async function admin(req, env, path, m, url) {
     case 'POST config': {
       need(isSuper);
       const b = await body();
-      const playstyles = (Array.isArray(b.playstyles) ? b.playstyles : [])
-        .map((p) => ({ nome: clip(p?.nome, 40), desc: clip(p?.desc, 200) })).filter((p) => p.nome).slice(0, 20);
-      const cfg = { horario: clip(b.horario, 200), regras: clip(b.regras, 20000), playstyles };
+      // só muda o que veio no pedido; o resto da config fica como estava
+      const cfg = await getConfig(env);
+      if (b.horario !== undefined) cfg.horario = clip(b.horario, 200);
+      if (b.regras !== undefined) cfg.regras = clip(b.regras, 20000);
+      if (Array.isArray(b.playstyles)) {
+        cfg.playstyles = b.playstyles.map((p) => ({ nome: clip(p?.nome, 40), desc: clip(p?.desc, 200) })).filter((p) => p.nome).slice(0, 20);
+      }
+      if (Array.isArray(b.gearTipos)) cfg.gearTipos = [...new Set(b.gearTipos.map((x) => clip(x, 30)).filter(Boolean))].slice(0, 10);
+      if (b.modos && typeof b.modos === 'object') cfg.modos = Object.fromEntries(DIAS.map((d) => [d, clip(b.modos[d], 40)]).filter(([, v]) => v));
+      if (Array.isArray(b.seasons)) {
+        cfg.seasons = b.seasons.slice(0, 60).map((s) => {
+          const nome = clip(s?.nome, 40);
+          if (!nome || !isDate(s?.inicio) || !isDate(s?.fim) || s.inicio > s.fim) fail(400, 'Cada season precisa de nome, início e fim (o fim depois do início).');
+          return { id: isId(s.id) ? s.id : uuid(), nome, inicio: s.inicio, fim: s.fim };
+        }).sort((x, y) => x.inicio.localeCompare(y.inicio));
+      }
+      if (b.seasonAtual !== undefined) cfg.seasonAtual = cfg.seasons.some((s) => s.id === b.seasonAtual) ? b.seasonAtual : '';
+      // season atual escolhida pelo nome quando ela acabou de ser criada (ainda sem id no navegador)
+      if (b.inativoFaltas !== undefined) cfg.inativoFaltas = Math.max(1, int(b.inativoFaltas, 50));
+      if (b.inativoDias !== undefined) cfg.inativoDias = Math.max(1, int(b.inativoDias, 365));
+      if (b.seasonAtualNome) cfg.seasonAtual = cfg.seasons.find((s) => s.nome === b.seasonAtualNome)?.id || cfg.seasonAtual;
       await putJ(env, 'config', cfg);
       await log(env, u, 'alterou a config');
       return json(cfg);
     }
 
     // ---- backup (sem usuários, sessões e imagens) ----
-    case 'GET backup': {
+    case 'GET backup':
       need(isAdmin);
-      const out = {};
-      for (const prefix of BACKUP_PREFIXES) {
-        let cursor;
-        do {
-          const res = await env.KV.list({ prefix, cursor });
-          for (const k of res.keys) out[k.name] = await getJ(env, k.name);
-          cursor = res.list_complete ? null : res.cursor;
-        } while (cursor);
-      }
-      return json(out);
+      return json(await backupDados(env));
+    case 'POST backup-teste': {
+      need(isSuper);
+      if (!env.DISCORD_BACKUP_WEBHOOK) fail(400, 'O secret DISCORD_BACKUP_WEBHOOK ainda não foi configurado no Worker.');
+      try { await enviarBackup(env); } catch { fail(502, 'O Discord recusou o backup. Confira o link do webhook de backup.'); }
+      await log(env, u, 'enviou um backup de teste pro Discord');
+      return json({ ok: true });
     }
+    case 'GET uso':
+      need(isSuper);
+      return json({ hoje: +((await env.KV.get('uso:' + hoje())) || 0), limite: 1000 });
     case 'POST backup': {
       need(isAdmin);
       const b = await body();

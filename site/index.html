@@ -92,6 +92,10 @@
             <input id="r-playstyleOutro" name="playstyleOutro" type="text" maxlength="100">
           </div>
           <div class="field">
+            <span id="r-gt-q">Tipo de gear <span class="hint">(pode marcar mais de um)</span></span>
+            <div class="options" role="group" aria-labelledby="r-gt-q" data-gear-tipos></div>
+          </div>
+          <div class="field">
             <label for="r-gear">Descreva seu gear <span class="hint">(opcional)</span></label>
             <textarea id="r-gear" name="gear" maxlength="1000"></textarea>
           </div>
@@ -169,6 +173,10 @@
         <div class="field">
           <label for="g-nick">Nick no jogo <span class="req" aria-hidden="true">*</span></label>
           <input id="g-nick" name="nick" type="text" maxlength="32" required autocomplete="nickname">
+        </div>
+        <div class="field">
+          <span id="g-gt-q">Tipo de gear <span class="hint">(pode marcar mais de um)</span></span>
+          <div class="options" role="group" aria-labelledby="g-gt-q" data-gear-tipos></div>
         </div>
         <div class="field">
           <label for="g-gear">Gear atual</label>

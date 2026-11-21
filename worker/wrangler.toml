@@ -6,7 +6,17 @@ compatibility_date = "2025-06-01"
 # Endereço do site no GitHub Pages (sem barra no final). Não é segredo.
 # Endereços que podem usar a API, separados por vírgula: o GitHub Pages e o seu PC (pra testar).
 ALLOWED_ORIGIN = "https://jvm2707.github.io,http://localhost:8080"
+# Endereço público do site (usado no link das táticas postadas no Discord)
+SITE_URL = "https://jvm2707.github.io/MIBR-Stalzone/site/"
 
 [[kv_namespaces]]
 binding = "KV"
 id = "c494a0e047a049f88a1ac8f36d8a6da1"
+
+# Workers AI: lê as prints de placar (plano grátis)
+[ai]
+binding = "AI"
+
+# Backup semanal pro Discord: domingo 06:00 UTC (03:00 em Brasília)
+[triggers]
+crons = ["0 6 * * SUN"]

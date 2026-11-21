@@ -199,3 +199,25 @@ th { font-family: var(--display); color: var(--muted); font-weight: 600; }
   .langs button { min-width: 36px; padding: 3px; }
   .langs svg { width: 24px; height: 16px; }
 }
+/* o que o squad procura, no topo do card */
+.procura { background: var(--panel-2); border-left: 3px solid var(--yellow); border-radius: var(--radius); padding: 8px 10px; display: grid; gap: 2px; }
+.procura p { margin: 0; color: var(--yellow); font-weight: 600; font-size: .95rem; }
+
+/* seletor de período, builds e tabela de KDA */
+.periodo { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end; margin-bottom: 12px; }
+.periodo .field { min-width: 170px; }
+.builds { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.build { display: flex; align-items: center; gap: 8px; }
+.build input[type=number] { width: 80px; min-height: 40px; }
+.modos { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.kda-edit input, .kda-edit select { min-height: 38px; padding: 6px 8px; }
+.kda-edit input[type=number] { width: 72px; }
+.kda-edit td { vertical-align: middle; }
+details { margin: 6px 0; }
+summary { cursor: pointer; padding: 6px 0; }
+.kda-edit input[data-f=nick] { min-width: 120px; }
+.kda-edit select { min-width: 140px; }
+.ordem { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 4px; }
+.ordem button { min-height: 38px; padding: 6px 12px; }
+.ordem button[aria-pressed=true] { border-color: var(--yellow); color: var(--yellow); }
+.pill.inativo { background: #6b1f1f; }
