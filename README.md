@@ -201,3 +201,20 @@ Todo domingo às 06:00 UTC (03:00 em Brasília; no `wrangler.toml` fica `0 6 * *
 - **No navegador:** a print é reduzida pra no máximo 1920px no lado maior e comprimida até uns 800 KB. Arquivos acima de 15 MB são recusados antes de tudo.
 - **No Worker** (vale mesmo se alguém burlar o navegador): no máximo 1 MB por imagem, 5 MB somando o envio, 4096px de cada lado, 4 imagens por envio e 8 por post de tática ou aviso. Os valores ficam no topo do `worker/worker.js`.
 - **Prints de gear:** quando o membro manda um gear novo com prints, as prints das atualizações anteriores somem em 60 dias. O texto e o tipo de gear ficam pra sempre; as prints da última atualização ficam sem prazo.
+
+## Contas de membro e aprovação
+
+- **Sem senha:** o player se registra **uma vez** e o acesso fica salvo **naquele navegador** (por 1 ano). A aba Registro some e aparece **Meu registro**. Um registro por nick e um por Discord @.
+- Todo registro novo entra como **pendente**. Na aba **Pendentes** do painel (só admin e superadmin), aprove ou recuse; o motivo da recusa é só interno. Aprovar coloca como **em teste** e libera o acesso de membro.
+- Em **Meu registro** ele vê e edita os próprios dados, manda gear novo ou exclui o registro (aí a aba Registro volta). Ele não mexe em status, squad, tags, nota, anotações, presença nem resultados.
+- **Visitante, pendente e recusado** veem só Registro, Regras e Squads. **Membro aprovado** vê também Avisos, Táticas, Membros, Ranking e o perfil de cada membro. O Worker recusa o resto (não é só o site escondendo).
+- Recusar, mudar o status pra **removido** ou excluir o registro derruba as sessões do membro.
+
+### Status fixos x tags
+
+- **Status** (fixos): em teste, membro, veterano, removido. Todo membro aprovado vê. Pendente e recusado são internos da aprovação.
+- **Tags**: os admins criam. Cada tag é **visível** (aparece no perfil pra todo o clã, ex.: "bom player") ou **oculta** (só a equipe vê, ex.: "não escuta call"). Tag nova e as que já existiam começam **ocultas**. No painel, a oculta aparece com 🔒. Use **Membros → Gerenciar tags** pra mudar.
+
+### Trocou de celular, limpou o navegador ou é membro antigo?
+
+Na ficha do membro, o admin clica em **Gerar link de acesso** e manda o link **no privado**. A pessoa abre o link uma vez e o acesso volta naquele aparelho. Os acessos antigos param de valer. Quem tiver o link entra como ele, então não poste em canal aberto.

@@ -5,7 +5,11 @@
 //   fail:<nome> (tentativas de login), rl:<ip>:<hora> (limite por IP), log:<ordem>
 
 const DIAS = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];
-const STATUS = ['teste', 'membro', 'veterano', 'removido'];
+// pendente/recusado são internos da aprovação; os 4 últimos são os status fixos que os membros veem
+// suspenso: continua na lista do painel, mas perde o acesso de membro (táticas, avisos, perfis) sem ser apagado
+const STATUS = ['pendente', 'recusado', 'teste', 'membro', 'veterano', 'removido', 'suspenso'];
+const APROVADOS = ['teste', 'membro', 'veterano']; // têm acesso de membro no site
+const SEM_ACESSO = ['removido']; // derruba as sessões. Pendente, recusado e suspenso mantêm a sessão só pra ver o aviso no Meu registro
 const ATT = { presente: 'presença', faltou: 'falta', justificou: 'falta justificada' };
 const RSVP = ['vai', 'talvez', 'nao'];
 const ROLES = ['admin', 'lider_squad'];
@@ -37,7 +41,7 @@ const DEFAULT_CONFIG = {
   inativoFaltas: 3, // faltas seguidas pra virar inativo
   inativoDias: 14, // dias sem presença pra virar inativo
   // o que o Worker posta sozinho no Discord (os 3 primeiros já existiam, ficam ligados)
-  discord: { registro: true, gear: true, apply: true, kdGame: false, kdDia: false, presenca: false, tatica: false },
+  discord: { registro: true, gear: true, apply: true, kdGame: false, kdDia: false, presenca: false, tatica: false, aceito: false },
 };
 const TIPOS_POST = ['tatica', 'aviso'];
 // Season de uma data: a que cobre o dia; senão a marcada como atual (registros antigos são deduzidos pela data).
@@ -140,15 +144,24 @@ async function route(req, env, ctx) {
       id: s.id, nome: s.nome, estilo: s.estilo, lider: s.lider, funcoes: s.funcoes || [], builds: s.builds || [],
       fixos: s.fixos.filter((f) => !f.reserva).map((f) => f.nick),
       reservas: s.fixos.filter((f) => f.reserva).map((f) => f.nick),
+      // ids na mesma ordem, pro site abrir o perfil (o perfil em si exige login de membro)
+      fixosIds: s.fixos.filter((f) => !f.reserva).map((f) => f.id),
+      reservasIds: s.fixos.filter((f) => f.reserva).map((f) => f.id),
     })));
   }
+  // táticas e avisos: só membro aprovado (ou admin). Post antigo marcado "só admins" continua escondido.
   if (m === 'GET' && p === '/api/posts') {
+    await leitor(req, env);
     const tipo = url.searchParams.get('tipo') === 'aviso' ? 'aviso' : 'tatica';
-    const posts = (await listVals(env, 'post:')).filter((x) => x.publico && (x.tipo || 'tatica') === tipo);
+    const posts = (await listVals(env, 'post:')).filter((x) => x.publico !== false && (x.tipo || 'tatica') === tipo);
     return json(posts.sort((a, b) => b.data.localeCompare(a.data)));
   }
   if (m === 'GET' && p.startsWith('/api/img/')) return getImage(env, p.slice(9));
-  if (m === 'POST' && ['/api/register', '/api/gear', '/api/apply'].includes(p)) return publicSubmit(p.slice(5), req, env, ctx);
+  if (m === 'POST' && ['/api/register', '/api/apply'].includes(p)) return publicSubmit(p.slice(5), req, env, ctx);
+  if (p === '/api/me' || p.startsWith('/api/me/')) return rotasMe(req, env, ctx, p.slice(8), m);
+  if (m === 'GET' && p === '/api/profiles') return perfis(req, env);
+  if (m === 'GET' && p.startsWith('/api/profile/')) return perfil(req, env, p.slice(13));
+  if (m === 'GET' && p === '/api/ranking') return ranking(req, env);
   if (m === 'POST' && p === '/api/rsvp') return rsvp(req, env);
   if (m === 'POST' && p === '/api/admin/login') return login(req, env);
   if (p.startsWith('/api/admin/')) return admin(req, env, p.slice(11), m, url);
@@ -320,7 +333,7 @@ async function publicSubmit(kind, req, env, ctx) {
   const count = +((await env.KV.get(rk)) || 0);
   if (count >= MAX_POR_HORA) fail(429, 'Limite de 3 envios por hora. Tente de novo mais tarde.');
 
-  const res = await (kind === 'register' ? register : kind === 'gear' ? gear : apply)(fd, env, ctx);
+  const res = await (kind === 'register' ? register : apply)(fd, env, ctx);
   await env.KV.put(rk, String(count + 1), { expirationTtl: 3600 });
   return res;
 }
@@ -328,7 +341,7 @@ async function publicSubmit(kind, req, env, ctx) {
 async function register(fd, env, ctx) {
   const nick = txt(fd, 'nick', 'Nick', 32, true);
   const key = 'nick:' + nick.toLowerCase();
-  if (await env.KV.get(key)) fail(409, 'Esse nick já está registrado. Pra mandar gear novo, use "Atualizar gear".');
+  if (await env.KV.get(key)) fail(409, 'Esse nick já está registrado. Se é você, edite em "Meu registro" ou peça um link de acesso pra um admin.');
   const idade = txt(fd, 'idade', 'Idade', 3);
   if (idade && !(/^\d+$/.test(idade) && +idade >= 10 && +idade <= 99)) fail(400, 'Idade precisa ser um número entre 10 e 99.');
   if (fd.get('regras') !== 'sim') fail(400, 'Você precisa aceitar as regras do clã.');
@@ -360,13 +373,17 @@ async function register(fd, env, ctx) {
     mic,
     sobre: txt(fd, 'sobre', 'Fale sobre você', 1000),
     criadoEm: new Date().toISOString(),
-    status: 'teste',
+    status: 'pendente', // entra pendente; admin aprova
     squad: '',
     nota: null,
     anotacoes: '',
     tags: [],
     gear: [],
   };
+  if ((await listVals(env, 'member:')).some((x) => x.discord?.toLowerCase() === m.discord.toLowerCase())) {
+    fail(409, 'Você já tem registro com esse Discord. Edite em "Meu registro" ou peça um link de acesso pra um admin.');
+  }
+  m.ver = 0;
   const cfg = await getConfig(env);
   m.gearTipos = gearTipos(fd, cfg);
   const gearTxt = txt(fd, 'gear', 'Gear', 1000);
@@ -393,19 +410,16 @@ async function register(fd, env, ctx) {
     ['Já jogou FPS', fps === 'sim' ? `Sim: ${m.fpsQual || '-'}` : 'Não'],
     ['Microfone', mic === 'sim' ? 'Sim' : 'Não'], ['Tipo de gear', m.gearTipos.join(', ')], ['Gear', gearTxt], ['Sobre', m.sobre],
   ], imgs, 'registro').catch((e) => console.error('discord', e)));
-  return json({ ok: true });
+  return json({ ok: true, token: await sessaoMembro(env, m) }); // já entra logado (vê "aguardando aprovação")
 }
 
-async function gear(fd, env, ctx) {
-  const nick = txt(fd, 'nick', 'Nick', 32, true);
+// Atualização de gear do próprio membro (Meu registro).
+async function gearUpdate(fd, env, ctx, m) {
   const cfg = await getConfig(env);
   const tipos = gearTipos(fd, cfg);
   const texto = txt(fd, 'gear', 'Gear', 1000);
   const imgs = await readImages(fd, IMGS_POR_ENVIO);
   if (!texto && !imgs.length && !tipos.length) fail(400, 'Escreva o gear ou mande pelo menos um print.');
-  const id = await getJ(env, 'nick:' + nick.toLowerCase());
-  const m = id && (await getJ(env, 'member:' + id));
-  if (!m) fail(404, 'Nick não encontrado. Faça o registro primeiro.');
   if (imgs.length) await expirarPrintsAntigas(env, m);
   m.gear.push({ data: new Date().toISOString(), season: seasonDe(cfg, hoje()), tipos, texto, imgs: await saveImages(env, imgs) });
   if (tipos.length) m.gearTipos = tipos; // o tipo mais recente é o que vale na ficha e no filtro
@@ -666,6 +680,7 @@ async function auth(req, env) {
   if (!/^[0-9a-f]{64}$/.test(token)) fail(401, 'Faça login.');
   const s = await getJ(env, 'sess:' + token);
   if (!s) fail(401, 'Sessão expirada. Faça login de novo.');
+  if (s.membro) fail(401, 'Essa conta é de membro: entre no painel com um usuário da equipe.'); // não apaga a sessão do membro
   let u;
   if (superName(env) && s.name === superName(env)) u = { name: s.name, role: 'superadmin', ver: 0 };
   else {
@@ -690,17 +705,179 @@ async function syncSquads(env, ids, members) {
   for (const id of new Set(ids.filter(Boolean))) {
     const sq = await getJ(env, 'squad:' + id);
     if (!sq) continue;
-    sq.fixos = members.filter((m) => m.squad === id && m.status !== 'removido')
+    sq.fixos = members.filter((m) => m.squad === id && APROVADOS.includes(m.status))
       .map((m) => ({ id: m.id, nick: m.nick, reserva: m.vaga === 'reserva' }));
     await putJ(env, 'squad:' + id, sq);
   }
 }
 
-async function addTags(env, tags) {
-  const all = (await getJ(env, 'tags')) || DEFAULT_TAGS;
-  const merged = [...new Set([...all, ...tags])];
-  if (merged.length !== all.length) await putJ(env, 'tags', merged);
+// tags: [{ nome, visivel }]. Formato antigo (só nomes) e tag nova entram como NÃO visível (seguro por padrão).
+async function lerTags(env) {
+  const nomeDe = (x) => (typeof x === 'string' ? x : x && typeof x === 'object' ? nomeDe(x.nome) : ''); // conserta tag gravada embrulhada ({nome:{nome}})
+  const all = ((await getJ(env, 'tags')) || DEFAULT_TAGS).map((x) => ({ nome: nomeDe(x), visivel: !!x?.visivel })).filter((t) => t.nome);
+  return all.filter((t, i) => all.findIndex((x) => x.nome === t.nome) === i);
 }
+async function addTags(env, tags) {
+  const all = await lerTags(env);
+  const novas = tags.filter((n) => !all.some((t) => t.nome === n));
+  if (novas.length) await putJ(env, 'tags', [...all, ...novas.map((nome) => ({ nome, visivel: false }))]);
+}
+const tagsVisiveis = (m, tags) => (m.tags || []).filter((n) => tags.find((t) => t.nome === n)?.visivel);
+
+// ---------- conta do membro ----------
+// O que sai do Worker é sempre montado por allowlist; o registro inteiro só vai pra admin (sem hash/salt).
+const semSegredo = ({ hash, salt, ver, token, ...m }) => ({ ...m, temSenha: !!hash, mustChange: !!m.mustChange });
+async function sessaoMembro(env, m) {
+  const token = randHex(32);
+  await putJ(env, 'sess:' + token, { membro: m.id, ver: m.ver || 0 }, { expirationTtl: 365 * 86400 }); // o acesso fica salvo no navegador por 1 ano
+  return token;
+}
+// troca = deixa passar quem está com senha provisória (só pra ver o registro e trocar a senha)
+async function authMembro(req, env, { aprovado = false, troca = false } = {}) {
+  const token = (req.headers.get('authorization') || '').replace(/^Bearer /, '');
+  if (!/^[0-9a-f]{64}$/.test(token)) fail(401, 'Entre com seu nick e senha.');
+  const s = await getJ(env, 'sess:' + token);
+  if (!s?.membro) fail(401, 'Entre com seu nick e senha.');
+  const m = await getJ(env, 'member:' + s.membro);
+  if (!m || (m.ver || 0) !== s.ver) { await env.KV.delete('sess:' + token); fail(401, 'Sessão encerrada. Entre de novo.'); }
+  if (m.mustChange && !troca) fail(403, 'Troque sua senha provisória antes de continuar.');
+  if (aprovado && !APROVADOS.includes(m.status)) fail(403, 'Só pra membros aprovados.');
+  return m;
+}
+// quem pode ver perfis, ranking e táticas: membro aprovado ou alguém do painel
+async function leitor(req, env) {
+  const token = (req.headers.get('authorization') || '').replace(/^Bearer /, '');
+  const s = /^[0-9a-f]{64}$/.test(token) && (await getJ(env, 'sess:' + token));
+  if (!s) fail(401, 'Entre como membro pra ver isso.');
+  if (s.membro) return { membro: await authMembro(req, env, { aprovado: true }) };
+  const u = await auth(req, env);
+  if (u.mustChange) fail(403, 'Troque sua senha provisória antes de continuar.');
+  return { admin: u };
+}
+
+// KDA do membro: só as linhas dele, pro site filtrar por season
+const kdaDe = (id, results) => results.flatMap((r) => r.linhas.filter((l) => l.memberId === id)
+  .map((l) => ({ date: r.date, game: r.game, modo: r.modo, season: r.season, kills: l.kills, deaths: l.deaths, assists: l.assists })));
+async function contexto(env) {
+  const [tags, squads, results] = await Promise.all([lerTags(env), listVals(env, 'squad:'), listVals(env, 'res:')]);
+  return { tags, squads, results };
+}
+// ALLOWLIST do perfil que qualquer membro aprovado vê.
+// Nada de discord, idade, país, sobre, clãs, experiência, nota, anotações, tags ocultas ou presença.
+function perfilPublico(m, c) {
+  return {
+    id: m.id, nick: m.nick, status: m.status, playstyles: m.playstyles || [], playstyleOutro: m.playstyleOutro || '',
+    gearTipos: m.gearTipos || [], gear: m.gear.map((g) => ({ data: g.data, tipos: g.tipos || [], texto: g.texto, imgs: g.imgs })),
+    mic: m.mic, dias: m.dias, squad: c.squads.find((x) => x.id === m.squad)?.nome || '',
+    tags: tagsVisiveis(m, c.tags), kda: kdaDe(m.id, c.results),
+  };
+}
+// ALLOWLIST do "Meu registro": o perfil + os próprios dados de cadastro + o motivo da recusa. Sem nota, anotações nem tags ocultas.
+function meuRegistro(m, c) {
+  return {
+    ...perfilPublico(m, c), discord: m.discord, idade: m.idade, pais: m.pais, fuso: m.fuso, cla: m.cla, claQual: m.claQual,
+    fps: m.fps, fpsQual: m.fpsQual, sobre: m.sobre, mustChange: !!m.mustChange,
+    motivoRecusa: m.status === 'recusado' ? m.motivoRecusa || '' : '',
+  };
+}
+
+async function perfis(req, env) {
+  await leitor(req, env);
+  const c = await contexto(env);
+  // removido não aparece na lista de ativos
+  const ms = (await listVals(env, 'member:')).filter((m) => APROVADOS.includes(m.status));
+  return json(ms.map((m) => {
+    const p = perfilPublico(m, c);
+    return { id: p.id, nick: p.nick, status: p.status, squad: p.squad, gearTipos: p.gearTipos, playstyles: p.playstyles, tags: p.tags };
+  }));
+}
+async function perfil(req, env, id) {
+  await leitor(req, env);
+  const m = isId(id) && (await getJ(env, 'member:' + id));
+  // removido ainda abre (aparece em rankings antigos); pendente e recusado não
+  if (!m || ![...APROVADOS, 'removido'].includes(m.status)) fail(404, 'Perfil não encontrado.');
+  return json(perfilPublico(m, await contexto(env)));
+}
+// Resultados pro ranking do site: quem não existe mais (ou não é membro) vira "ex-membro".
+async function ranking(req, env) {
+  await leitor(req, env);
+  const membros = Object.fromEntries((await listVals(env, 'member:'))
+    .filter((m) => [...APROVADOS, 'removido'].includes(m.status)).map((m) => [m.id, m.nick]));
+  return json((await listVals(env, 'res:')).map((r) => ({
+    date: r.date, game: r.game, modo: r.modo, season: r.season,
+    linhas: r.linhas.map((l) => ({ memberId: membros[l.memberId] ? l.memberId : null, nick: membros[l.memberId] || 'ex-membro', kills: l.kills, deaths: l.deaths, assists: l.assists })),
+  })));
+}
+
+// Campos de cadastro que o próprio membro edita. Status, squad, tags, nota etc. não passam por aqui.
+// Devolve true se o nick mudou (o squad mostra o nick).
+async function aplicarDados(env, mem, d) {
+  const sn = (v) => (v === 'sim' ? 'sim' : 'nao');
+  const arr = (v, n, len) => (Array.isArray(v) ? [...new Set(v.map((x) => clip(x, len)).filter(Boolean))].slice(0, n) : []);
+  const nick = clip(d.nick, 32);
+  const discord = clip(d.discord, 40);
+  if (!nick) fail(400, 'O nick não pode ficar vazio.');
+  if (!discord) fail(400, 'O Discord não pode ficar vazio.');
+  for (const v of [nick, discord, d.pais, d.playstyleOutro, d.claQual, d.fpsQual, d.sobre]) {
+    if (PROIBIDO.test(String(v ?? ''))) fail(400, 'Links e @everyone/@here não são permitidos.');
+  }
+  if (d.idade && !(/^\d+$/.test(d.idade) && +d.idade >= 10 && +d.idade <= 99)) fail(400, 'Idade precisa ser um número entre 10 e 99.');
+  if (!/^GMT[+-]\d{1,2}(:\d{2})?$/.test(d.fuso)) fail(400, 'Fuso inválido.');
+  if (discord.toLowerCase() !== (mem.discord || '').toLowerCase()
+    && (await listVals(env, 'member:')).some((x) => x.id !== mem.id && x.discord?.toLowerCase() === discord.toLowerCase())) {
+    fail(409, 'Esse Discord já está em outro registro.');
+  }
+  let nickMudou = false;
+  if (nick.toLowerCase() !== mem.nick.toLowerCase()) {
+    if (await env.KV.get('nick:' + nick.toLowerCase())) fail(409, 'Já existe um membro com esse nick.');
+    await env.KV.delete('nick:' + mem.nick.toLowerCase());
+    await putJ(env, 'nick:' + nick.toLowerCase(), mem.id);
+    nickMudou = true;
+  }
+  Object.assign(mem, {
+    nick, discord, idade: clip(d.idade, 3), pais: clip(d.pais, 60), fuso: d.fuso,
+    dias: Array.isArray(d.dias) ? d.dias.filter((x) => DIAS.includes(x)) : mem.dias,
+    playstyles: arr(d.playstyles, 10, 40), playstyleOutro: clip(d.playstyleOutro, 100), gearTipos: arr(d.gearTipos, 10, 30),
+    cla: sn(d.cla), claQual: clip(d.claQual, 200), fps: sn(d.fps), fpsQual: clip(d.fpsQual, 200), mic: sn(d.mic), sobre: clip(d.sobre, 1000),
+  });
+  return nickMudou;
+}
+
+// /api/me...: só o próprio membro logado
+async function rotasMe(req, env, ctx, sub, m) {
+  const body = () => req.json().catch(() => fail(400, 'JSON inválido.'));
+  const r = `${m} ${sub}`;
+  if (r === 'GET ') {
+    const mem = await authMembro(req, env, { troca: true });
+    return json(meuRegistro(mem, await contexto(env)));
+  }
+  if (r === 'POST ') {
+    const mem = await authMembro(req, env);
+    const nickMudou = await aplicarDados(env, mem, await body());
+    await putJ(env, 'member:' + mem.id, mem);
+    if (nickMudou && mem.squad) await syncSquads(env, [mem.squad], (await listVals(env, 'member:')).map((x) => (x.id === mem.id ? mem : x)));
+    return json(meuRegistro(mem, await contexto(env)));
+  }
+  if (r === 'POST gear') {
+    const mem = await authMembro(req, env);
+    if (+req.headers.get('content-length') > ENVIO_MAX_BYTES + 1e6) fail(413, 'Envio grande demais.');
+    const fd = await req.formData().catch(() => fail(400, 'Formulário inválido.'));
+    return gearUpdate(fd, env, ctx, mem);
+  }
+  if (r === 'POST delete') {
+    const mem = await authMembro(req, env, { troca: true });
+    // apaga os dados pessoais e as prints; presença e resultados ficam e aparecem como "ex-membro"
+    await Promise.all(mem.gear.flatMap((g) => g.imgs).map((i) => env.KV.delete('img:' + i)));
+    await env.KV.delete('member:' + mem.id); // sem o registro, toda sessão dele morre
+    if ((await getJ(env, 'nick:' + mem.nick.toLowerCase())) === mem.id) await env.KV.delete('nick:' + mem.nick.toLowerCase());
+    if (mem.squad) await syncSquads(env, [mem.squad], (await listVals(env, 'member:')).filter((x) => x.id !== mem.id));
+    await log(env, { name: 'membro ' + mem.nick }, 'excluiu o próprio registro');
+    return json({ ok: true });
+  }
+  fail(404, 'Rota não encontrada.');
+}
+
+
 
 // Funções e builds (tipo de gear + quantidade opcional) que o squad procura.
 function procura(sq, b) {
@@ -776,7 +953,7 @@ async function admin(req, env, path, m, url) {
   switch (r) {
     // ---- membros ----
     case 'GET members': {
-      const all = await listVals(env, 'member:');
+      const all = (await listVals(env, 'member:')).map(semSegredo); // hash/salt nunca saem do Worker
       if (isAdmin) return json(all);
       // líder também vê a ficha de quem pediu pro squad dele, sem as avaliações de outros
       const pedidos = new Set((await listVals(env, 'apply:'))
@@ -785,7 +962,46 @@ async function admin(req, env, path, m, url) {
         .map((x) => (canSee(x) ? x : { ...x, candidato: true, nota: null, anotacoes: '', tags: [] })));
     }
     case 'GET tags':
-      return json((await getJ(env, 'tags')) || DEFAULT_TAGS);
+      return json(await lerTags(env));
+    // criar tag ou mudar se ela é visível pros membros (só admin)
+    case 'POST tag': {
+      need(isAdmin);
+      const b = await body();
+      const nome = clip(b.nome, 30).toLowerCase();
+      if (!nome) fail(400, 'Dê um nome pra tag.');
+      const all = await lerTags(env);
+      let t = all.find((x) => x.nome === nome);
+      if (!t) { t = { nome, visivel: false }; all.push(t); }
+      t.visivel = !!b.visivel;
+      await putJ(env, 'tags', all);
+      await log(env, u, `marcou a tag "${nome}" como ${t.visivel ? 'visível' : 'oculta'}`);
+      return json(all);
+    }
+    // aprovar/recusar registro novo: só admin e superadmin (líder de squad não)
+    case 'POST approve': {
+      need(isAdmin);
+      const b = await body();
+      const mem = isId(b.id) && (await getJ(env, 'member:' + b.id));
+      if (!mem) fail(404, 'Membro não encontrado.');
+      if (b.aprovar) { mem.status = 'teste'; delete mem.motivoRecusa; }
+      else { mem.status = 'recusado'; mem.motivoRecusa = clip(b.motivo, 300); } // o membro vê o motivo no Meu registro
+      await putJ(env, 'member:' + mem.id, mem);
+      await log(env, u, `${b.aprovar ? 'aprovou' : 'recusou'} o registro de ${mem.nick}`);
+      if (b.aprovar) await discord(env, `${mem.nick} foi aceito no clã`, [], [], 'aceito').catch((e) => console.error('discord', e));
+      return json(semSegredo(mem));
+    }
+    // link de acesso (membro antigo, trocou de celular ou limpou o navegador): os acessos antigos param de valer
+    case 'POST member-acesso': {
+      need(isAdmin);
+      const b = await body();
+      const mem = isId(b.id) && (await getJ(env, 'member:' + b.id));
+      if (!mem) fail(404, 'Membro não encontrado.');
+      mem.ver = (mem.ver || 0) + 1;
+      delete mem.mustChange;
+      await putJ(env, 'member:' + mem.id, mem);
+      await log(env, u, `gerou um link de acesso pra ${mem.nick}`);
+      return json({ token: await sessaoMembro(env, mem) });
+    }
     case 'POST member': {
       const b = await body();
       const mem = isId(b.id) && (await getJ(env, 'member:' + b.id));
@@ -797,7 +1013,7 @@ async function admin(req, env, path, m, url) {
       }
       if (b.anotacoes !== undefined) mem.anotacoes = clip(b.anotacoes, 3000);
       if (Array.isArray(b.tags)) {
-        mem.tags = [...new Set(b.tags.map((t) => clip(t, 30).toLowerCase()).filter(Boolean))].slice(0, 20);
+        mem.tags = [...new Set(b.tags.map((t) => clip(typeof t === 'string' ? t : t?.nome, 30).toLowerCase()).filter(Boolean))].slice(0, 20);
         await addTags(env, mem.tags);
       }
       let squadMudou = false;
@@ -851,6 +1067,7 @@ async function admin(req, env, path, m, url) {
         if (b.status !== undefined && b.status !== mem.status) {
           if (!STATUS.includes(b.status)) fail(400, 'Status inválido.');
           mem.status = b.status;
+          if (SEM_ACESSO.includes(b.status)) mem.ver = (mem.ver || 0) + 1; // perde o acesso: sessões caem
           squadMudou = true; // "removido" sai da lista pública de fixos
         }
         if (b.squad !== undefined && b.squad !== mem.squad) {
@@ -867,7 +1084,7 @@ async function admin(req, env, path, m, url) {
       }
       if (b.tirarDoSquad) await log(env, u, `tirou ${mem.nick} do squad ${await getJ(env, 'squad:' + oldSquad).then((s) => s?.nome || '')}`);
       else await log(env, u, b.gearEdit ?`${b.gearEdit.remover ? 'apagou' : 'editou'} um gear de ${mem.nick}` : b.dados ? `editou o registro de ${mem.nick}` : `editou a ficha de ${mem.nick}`);
-      return json(mem);
+      return json(semSegredo(mem));
     }
 
     // Apagar membro (só admin): some o registro, o nick e as prints de gear.
@@ -1119,9 +1336,12 @@ async function admin(req, env, path, m, url) {
       return json(linhas.filter((l) => !vistos.has(l.nick.toLowerCase()) && vistos.add(l.nick.toLowerCase())));
     }
     case 'GET results': {
-      const all = await listVals(env, 'res:');
+      const membrosRes = await listVals(env, 'member:');
+      const existe = new Set(membrosRes.map((x) => x.id));
+      // quem excluiu o próprio registro (ou foi apagado) aparece como "ex-membro"; os números ficam
+      const all = (await listVals(env, 'res:')).map((r) => ({ ...r, linhas: r.linhas.map((l) => (existe.has(l.memberId) ? l : { ...l, nick: 'ex-membro' })) }));
       if (isAdmin) return json(all);
-      const mine = new Set((await listVals(env, 'member:')).filter(canSee).map((x) => x.id));
+      const mine = new Set(membrosRes.filter(canSee).map((x) => x.id));
       return json(all.map((r) => ({ ...r, linhas: r.linhas.filter((l) => mine.has(l.memberId)) })));
     }
     case 'POST result': {

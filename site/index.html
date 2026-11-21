@@ -14,18 +14,21 @@
   <script src="config.js"></script>
   <script src="i18n.js" defer></script>
   <script src="app.js" defer></script>
+  <script src="membro.js" defer></script>
 </head>
 <body>
   <header class="top">
     <div class="wrap">
       <a class="brand" href="#registro">MIBR <span>Stalzone</span></a>
       <nav aria-label="Páginas">
-        <a href="#registro">Registro</a>
-        <a href="#avisos">Avisos</a>
-        <a href="#gear">Atualizar gear</a>
-        <a href="#squads">Squads</a>
+        <a href="#registro" data-so="visitante">Registro</a>
         <a href="#regras">Regras</a>
-        <a href="#taticas">Táticas</a>
+        <a href="#squads">Squads</a>
+        <a href="#avisos" data-so="membro" hidden>Avisos</a>
+        <a href="#taticas" data-so="membro" hidden>Táticas</a>
+        <a href="#membros" data-so="membro" hidden>Membros</a>
+        <a href="#ranking" data-so="membro" hidden>Ranking</a>
+        <a href="#meu" data-so="logado" hidden>Meu registro</a>
       </nav>
       <div class="langs" role="group" aria-label="Idioma">
         <button type="button" data-lang="pt" aria-label="Português" title="Português"><svg viewBox="0 0 30 20" aria-hidden="true"><rect width="30" height="20" fill="#009C3B"/><path d="M15 2.5 27.5 10 15 17.5 2.5 10z" fill="#FFDF00"/><circle cx="15" cy="10" r="4.2" fill="#002776"/></svg></button>
@@ -38,7 +41,7 @@
 
   <main class="wrap">
     <!-- REGISTRO -->
-    <section id="registro" class="narrow" aria-labelledby="h-registro">
+    <section id="registro" class="narrow" aria-labelledby="h-registro" data-so="visitante">
       <h1 id="h-registro" tabindex="-1">Entrar pro clã</h1>
       <p class="lead">Preencha a ficha. Os admins leem tudo e chamam você pro teste. Campos com <span class="req">*</span> são obrigatórios.</p>
 
@@ -95,6 +98,17 @@
             <span id="r-gt-q">Tipo de gear <span class="hint">(pode marcar mais de um)</span></span>
             <div class="options" role="group" aria-labelledby="r-gt-q" data-gear-tipos></div>
           </div>
+          <details class="exemplo">
+            <summary>Ver exemplo</summary>
+            <p class="hint">Um jeito bom de descrever o gear (copie e troque pelos seus itens):</p>
+            <pre>Primary Gun: KS-23 +15
+Secondary Gun(s): Honey Badger +15, SR-3M +13
+Melee: Katana
+Armor(s): Punisher +15, Raps +15, Centurion +15
+Build(s): Speed (Main), Speed (Secondary)
+Prints: (adicione as prints)</pre>
+            <div class="thumbs"><a href="exemplo-gear-1.png" target="_blank" rel="noopener"><img src="exemplo-gear-1.png" alt="Exemplo de print: tela de gear do jogo com armadura, mochila e arma" loading="lazy"></a><a href="exemplo-gear-2.png" target="_blank" rel="noopener"><img src="exemplo-gear-2.png" alt="Exemplo de print: build da Stalzone Wiki com artefatos e resultado" loading="lazy"></a></div>
+          </details>
           <div class="field">
             <label for="r-gear">Descreva seu gear <span class="hint">(opcional)</span></label>
             <textarea id="r-gear" name="gear" maxlength="1000"></textarea>
@@ -160,37 +174,29 @@
     </section>
 
     <!-- AVISOS -->
-    <section id="avisos" aria-labelledby="h-avisos" hidden>
+    <section id="avisos" aria-labelledby="h-avisos" hidden data-so="membro">
       <h1 id="h-avisos" tabindex="-1">Avisos</h1>
       <div id="avisos-list" data-dyn><p class="muted">Carregando avisos…</p></div>
     </section>
 
-    <!-- GEAR -->
-    <section id="gear" class="narrow" aria-labelledby="h-gear" hidden>
-      <h1 id="h-gear" tabindex="-1">Atualizar gear</h1>
-      <p class="lead">Mandou gear novo? Ele entra no seu histórico com a data de hoje. Precisa ter feito o registro antes.</p>
-      <form id="f-gear">
-        <div class="field">
-          <label for="g-nick">Nick no jogo <span class="req" aria-hidden="true">*</span></label>
-          <input id="g-nick" name="nick" type="text" maxlength="32" required autocomplete="nickname">
-        </div>
-        <div class="field">
-          <span id="g-gt-q">Tipo de gear <span class="hint">(pode marcar mais de um)</span></span>
-          <div class="options" role="group" aria-labelledby="g-gt-q" data-gear-tipos></div>
-        </div>
-        <div class="field">
-          <label for="g-gear">Gear atual</label>
-          <textarea id="g-gear" name="gear" maxlength="1000"></textarea>
-        </div>
-        <div class="field">
-          <label for="g-prints">Prints <span class="hint">(até 4, JPG/PNG/WEBP)</span></label>
-          <input id="g-prints" type="file" accept="image/jpeg,image/png,image/webp" multiple>
-        </div>
-        <div class="previews" aria-label="Prints escolhidos"></div>
-        <div class="ts"></div>
-        <div class="status" role="status" aria-live="polite"></div>
-        <div class="actions"><button class="primary" type="submit">Enviar gear</button></div>
-      </form>
+    <!-- MEU REGISTRO (montado pelo membro.js) -->
+    <section id="meu" class="narrow" aria-labelledby="h-meu" hidden data-so="logado">
+      <h1 id="h-meu" tabindex="-1">Meu registro</h1>
+      <div id="meu-box" data-dyn></div>
+    </section>
+
+    <!-- MEMBROS, RANKING E PERFIL (só membro aprovado) -->
+    <section id="membros" aria-labelledby="h-membros" hidden data-so="membro">
+      <h1 id="h-membros" tabindex="-1">Membros</h1>
+      <div id="membros-box" data-dyn></div>
+    </section>
+    <section id="ranking" aria-labelledby="h-ranking" hidden data-so="membro">
+      <h1 id="h-ranking" tabindex="-1">Ranking de KDA</h1>
+      <div id="ranking-box" data-dyn></div>
+    </section>
+    <section id="perfil" class="narrow" aria-labelledby="h-perfil" hidden data-so="membro">
+      <h1 id="h-perfil" tabindex="-1">Perfil</h1>
+      <div id="perfil-box" data-dyn></div>
     </section>
 
     <!-- SQUADS -->
@@ -208,7 +214,7 @@
             <input id="a-nick" name="nick" type="text" maxlength="32" required autocomplete="nickname">
           </div>
           <div class="field">
-            <label for="a-msg">Mensagem curta</label>
+            <label for="a-msg">Mensagem curta <span class="hint">(opcional)</span></label>
             <textarea id="a-msg" name="msg" maxlength="300"></textarea>
           </div>
           <div class="ts"></div>
@@ -228,7 +234,7 @@
     </section>
 
     <!-- TÁTICAS -->
-    <section id="taticas" aria-labelledby="h-taticas" hidden>
+    <section id="taticas" aria-labelledby="h-taticas" hidden data-so="membro">
       <h1 id="h-taticas" tabindex="-1">Táticas</h1>
       <div id="taticas-list" data-dyn><p class="muted">Carregando táticas…</p></div>
     </section>

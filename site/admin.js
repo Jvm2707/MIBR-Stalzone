@@ -1,6 +1,10 @@
 // Painel admin. O Worker confere o cargo em TODA rota; aqui a gente só esconde o que o cargo não usa.
 const $ = (s, el = document) => el.querySelector(s);
-const STATUS = { teste: 'Em teste', membro: 'Membro', veterano: 'Veterano', removido: 'Removido' };
+const STATUS = { pendente: 'Pendente', recusado: 'Recusado', teste: 'Em teste', membro: 'Membro', veterano: 'Veterano', removido: 'Removido', suspenso: 'Sem acesso (suspenso)' };
+const APROVADOS = ['teste', 'membro', 'veterano'];
+// tags: [{ nome, visivel }]; a oculta aparece com cadeado e nunca sai do Worker pra membro
+const tagOculta = (nome) => !D.tags.find((t) => t.nome === nome)?.visivel;
+const tagTxt = (nome) => `${tagOculta(nome) ? '🔒 ' : ''}${nome}`;
 const ATT = { presente: 'Presente', faltou: 'Faltou', justificou: 'Justificou' };
 const RSVP = { vai: 'vai', talvez: 'talvez', nao: 'não vai' };
 const DIAS = { seg: 'Seg', ter: 'Ter', qua: 'Qua', qui: 'Qui', sex: 'Sex', sab: 'Sáb', dom: 'Dom' };
@@ -17,7 +21,7 @@ const brDate = (d) => d.split('-').reverse().join('/');
 const sqName = (id) => D.squads.find((s) => s.id === id)?.nome || '';
 const opts = (pairs, sel) => pairs.map(([v, l]) => `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(l)}</option>`).join('');
 // candidato = quem pediu pro squad do líder mas ainda não é dele (só leitura)
-const active = () => D.members.filter((m) => m.status !== 'removido' && !m.candidato).sort((a, b) => a.nick.localeCompare(b.nick));
+const active = () => D.members.filter((m) => APROVADOS.includes(m.status) && !m.candidato).sort((a, b) => a.nick.localeCompare(b.nick));
 const pendentes = () => D.applies.filter((a) => a.status === 'pendente');
 const msg = (t, bad) => say($('#msg'), t, bad);
 
@@ -192,6 +196,8 @@ async function reload() {
     call('members'), call('squads'), call('attendance'), call('tags'), api('/api/config'), call('applies'), call('results'),
   ]);
   periodo ||= periodoPadrao();
+  const np = D.members.filter((m) => m.status === 'pendente').length;
+  $('[data-tab=pendentes]').textContent = np ? `Pendentes (${np})` : 'Pendentes';
   const n = pendentes().length;
   $('[data-tab=squads]').textContent = n ? `Squads (${n} ${n === 1 ? 'pedido' : 'pedidos'})` : 'Squads';
 }
@@ -202,6 +208,8 @@ async function openPanel() {
   msg('Carregando…');
   await reload();
   showTab(tabName); // showTab limpa a mensagem, então o aviso vem depois
+  const fichaId = location.hash.match(/^#ficha\/([0-9a-f-]{36})$/)?.[1];
+  if (fichaId && D.members.some((x) => x.id === fichaId)) ficha(fichaId);
   const p = pendentes();
   msg(p.length ? `${p.slice(0, 3).map((a) => a.nick).join(', ')}${p.length > 3 ? ` e mais ${p.length - 3}` : ''} ${p.length === 1 ? 'pediu' : 'pediram'} pra jogar ${sess.role === 'lider_squad' ? 'no seu squad' : 'num squad'}. Veja na aba Squads.` : '');
 }
@@ -233,8 +241,8 @@ const TABS = {
         <div class="field"><label for="f-dia">Dia disponível</label><select id="f-dia"><option value="">Todos</option>${opts(Object.entries(DIAS))}</select></div>
         <div class="field"><label for="f-ps">Função</label><select id="f-ps"><option value="">Todos</option>${opts(playstyles.map((p) => [p, p]))}</select></div>
         <div class="field"><label for="f-sq">Squad (desejado ou atual)</label><select id="f-sq"><option value="">Todos</option>${opts(D.squads.map((s) => [s.id, s.nome]))}</select></div>
-        <div class="field"><label for="f-st">Status</label><select id="f-st"><option value="">Todos menos removidos</option>${opts(Object.entries(STATUS))}</select></div>
-        <div class="field"><label for="f-tag">Tag</label><select id="f-tag"><option value="">Todas</option>${opts(D.tags.map((t) => [t, t]))}</select></div>
+        <div class="field"><label for="f-st">Status</label><select id="f-st"><option value="">Ativos (em teste, membro, veterano)</option>${opts(Object.entries(STATUS))}</select></div>
+        <div class="field"><label for="f-tag">Tag</label><select id="f-tag"><option value="">Todas</option>${opts(D.tags.map((t) => [t.nome, tagTxt(t.nome)]))}</select></div>
       </div>
       <p class="muted" id="m-count"></p>
       <div class="table-wrap"><table>
@@ -251,7 +259,7 @@ const TABS = {
           && (!dia || m.dias.includes(dia))
           && (!ps || m.playstyles.includes(ps))
           && (!sq || m.squad === sq || m.squadDesejado === sq)
-          && (st ? m.status === st : m.status !== 'removido')
+          && (st ? m.status === st : APROVADOS.includes(m.status))
           && (!tag || m.tags.includes(tag)))
         .sort((a, b) => a.nick.localeCompare(b.nick));
       $('#m-count').textContent = `${rows.length} ${rows.length === 1 ? 'membro' : 'membros'}`;
@@ -267,12 +275,16 @@ const TABS = {
         <td>${esc(m.nota ?? '-')}</td>
         <td>${fmtFreq(freq(m.id))}</td>
         <td>${k.jogos ? `<span title="${esc(fmtKda(k))}">${rating(k).toFixed(2)}</span>` : '<span class="muted">-</span>'}</td>
-        <td>${m.tags.map((t) => `<span class="pill">${esc(t)}</span>`).join(' ')}</td>
+        <td>${m.tags.map((t) => `<span class="pill"${tagOculta(t) ? ' title="Oculta: só a equipe vê"' : ''}>${esc(tagTxt(t))}</span>`).join(' ')}</td>
       </tr>`;
       }).join('') || '<tr><td colspan="10" class="muted">Nenhum membro com esses filtros.</td></tr>';
     };
     T.querySelectorAll('.filters input, .filters select').forEach((el) => (el.oninput = draw));
     montarPeriodo($('#m-per'), 'mp', draw);
+    if (isAdmin()) {
+      $('#m-count').insertAdjacentHTML('beforebegin', '<div class="actions"><button type="button" data-tags>Gerenciar tags</button></div>');
+      $('[data-tags]').onclick = tagsForm;
+    }
     T.onclick = (e) => { const id = e.target.closest('[data-ficha]')?.dataset.ficha; if (id) ficha(id); };
     redraw = draw;
     draw();
@@ -467,6 +479,33 @@ const TABS = {
         await TABS.squads();
         msg(`Pedido de ${a.nick} ${a.status}.`);
       }
+    });
+  },
+
+  async pendentes() {
+    const T = $('#tab');
+    const ps = D.members.filter((m) => m.status === 'pendente').sort((a, b) => a.criadoEm.localeCompare(b.criadoEm));
+    const recusados = D.members.filter((m) => m.status === 'recusado');
+    T.innerHTML = `<h1>Pendentes</h1>
+      <p class="muted">Registro novo entra aqui. Aprovar coloca como "em teste" e libera o acesso de membro no site. Recusar tira o acesso; o motivo é só interno.</p>
+      ${ps.length ? `<div class="table-wrap"><table><thead><tr><th>Nick</th><th>Discord</th><th>Registrou em</th><th>Resposta</th></tr></thead><tbody>
+        ${ps.map((m) => `<tr><td><button type="button" class="linkish" data-ficha="${esc(m.id)}">${esc(m.nick)}</button></td><td>${esc(m.discord)}</td><td>${fmtDate(m.criadoEm)}</td>
+          <td><div class="actions"><button type="button" class="primary" data-aprovar="${esc(m.id)}">Aprovar</button><button type="button" data-recusar="${esc(m.id)}">Recusar</button></div></td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="muted">Nenhum registro esperando aprovação.</p>'}
+      ${recusados.length ? `<h2>Recusados</h2><ul>${recusados.map((m) => `<li><button type="button" class="linkish" data-ficha="${esc(m.id)}">${esc(m.nick)}</button>${m.motivoRecusa ? `: ${esc(m.motivoRecusa)}` : ''} <button type="button" class="linkish" data-aprovar="${esc(m.id)}">aprovar mesmo assim</button></li>`).join('')}</ul>` : ''}`;
+    T.onclick = run(async (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.ficha) return ficha(b.dataset.ficha);
+      const id = b.dataset.aprovar || b.dataset.recusar;
+      if (!id) return;
+      const m = D.members.find((x) => x.id === id);
+      const motivo = b.dataset.recusar ? prompt(`Recusar ${m.nick}? Motivo (opcional, o membro vê):`, '') : '';
+      if (motivo === null) return;
+      Object.assign(m, await call('approve', { method: 'POST', body: { id, aprovar: !!b.dataset.aprovar, motivo } }));
+      await reload();
+      await TABS.pendentes();
+      msg(`${m.nick} ${b.dataset.aprovar ? 'aprovado: já tem acesso de membro' : 'recusado'}.`);
     });
   },
 
@@ -951,8 +990,10 @@ function ficha(id) {
     .sort((a, b) => b.date.localeCompare(a.date) || b.game - a.game);
   const row = (k, v) => (v ? `<tr><th scope="row">${k}</th><td class="pre">${esc(v)}</td></tr>` : '');
   dlg(`<h2 id="dlg-title">${esc(m.nick)}</h2>
-    <p class="meta">Registrado em ${fmtDate(m.criadoEm)}.</p>
-    ${admin && !m.candidato ? '<div class="actions"><button type="button" data-reg>Editar registro</button><button type="button" class="danger" data-apagar-membro>Apagar membro</button></div>' : ''}
+    <p class="meta">Registrado em ${fmtDate(m.criadoEm)}. Status: ${STATUS[m.status] || esc(m.status)}. </p>
+    ${m.motivoRecusa && m.status === 'recusado' ? `<p class="status bad">Motivo da recusa (o membro vê): ${esc(m.motivoRecusa)}</p>` : ''}
+    ${admin && !m.candidato ? `<div class="actions">${['teste', 'membro', 'veterano'].includes(m.status) ? '<button type="button" data-suspender>Tirar acesso</button>' : '<button type="button" class="primary" data-aprovar-m>Aprovar</button>'}${m.status === 'pendente' ? '<button type="button" data-desaprovar>Desaprovar</button>' : ''}</div>` : ''}
+    ${admin && !m.candidato ? '<div class="actions"><button type="button" data-reg>Editar registro</button><button type="button" data-acesso>Gerar link de acesso</button><button type="button" class="danger" data-apagar-membro>Apagar membro</button></div>' : ''}
     <div id="fi-per"></div>
     <p>Frequência no período: ${fmtFreq(freq(id))}</p>
     <h3>KDA no período</h3>
@@ -993,8 +1034,10 @@ function ficha(id) {
       </div>` : ''}
       <div class="field"><label for="fi-nota">Nota <span class="hint">(1 a 10)</span></label><input id="fi-nota" name="nota" type="number" min="1" max="10" step="1" value="${esc(m.nota)}"></div>
       <fieldset><legend>Tags</legend>
-        <div class="options">${[...new Set([...D.tags, ...m.tags])].map((t) => `<label class="check"><input type="checkbox" name="tags" value="${esc(t)}"${m.tags.includes(t) ? ' checked' : ''}> ${esc(t)}</label>`).join('')}</div>
+        <p class="hint">🔒 = oculta: só a equipe vê. As outras aparecem no perfil do membro.</p>
+        <div class="options">${[...new Set([...D.tags.map((t) => t.nome), ...m.tags])].map((t) => `<label class="check"><input type="checkbox" name="tags" value="${esc(t)}"${m.tags.includes(t) ? ' checked' : ''}> ${esc(tagTxt(t))}</label>`).join('')}</div>
         <div class="field"><label for="fi-nova">Criar tag nova</label><input id="fi-nova" name="novaTag" type="text" maxlength="30"></div>
+        ${admin ? '<label class="check"><input type="checkbox" name="novaVisivel"> A tag nova é visível pros membros</label>' : '<p class="hint">Tag nova criada aqui começa oculta.</p>'}
       </fieldset>
       <div class="field"><label for="fi-notas">Anotações</label><textarea id="fi-notas" name="anotacoes" maxlength="3000">${esc(m.anotacoes)}</textarea></div>
       <div class="status" role="status" aria-live="polite"></div>
@@ -1013,6 +1056,26 @@ function ficha(id) {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.hasAttribute('data-reg')) return registroForm(m);
+    // link que devolve o acesso do membro (outro aparelho, navegador limpo, membro antigo); os acessos antigos param de valer
+    if (b.hasAttribute('data-acesso')) {
+      if (!confirm(`Gerar um link de acesso pra ${m.nick}? Os acessos que ele já tinha em outros aparelhos param de valer.`)) return;
+      const r = await call('member-acesso', { method: 'POST', body: { id } });
+      prompt(`Link de acesso de ${m.nick}. Mande só pra ele, no privado: quem tiver o link entra como ele.`, new URL(`index.html#acesso/${r.token}`, location.href).href);
+      return msg(`Link de acesso gerado pra ${m.nick}.`);
+    }
+    // aprovar / desaprovar (com motivo que o membro vê) / tirar acesso sem apagar
+    if (b.hasAttribute('data-aprovar-m') || b.hasAttribute('data-desaprovar')) {
+      const aprovar = b.hasAttribute('data-aprovar-m');
+      const motivo = aprovar ? '' : prompt(`Desaprovar ${m.nick}? Motivo (opcional, aparece pra ele):`, '');
+      if (motivo === null) return;
+      Object.assign(m, await call('approve', { method: 'POST', body: { id, aprovar, motivo } }));
+      await reload(); msg(`${m.nick} ${aprovar ? 'aprovado' : 'desaprovado'}.`); return ficha(id);
+    }
+    if (b.hasAttribute('data-suspender')) {
+      if (!confirm(`Tirar o acesso de ${m.nick}? Ele continua na lista, mas não vê táticas, avisos nem perfis. Dá pra aprovar de novo depois.`)) return;
+      Object.assign(m, await call('member', { method: 'POST', body: { id, status: 'suspenso' } }));
+      await reload(); msg(`${m.nick} ficou sem acesso.`); return ficha(id);
+    }
     if (b.hasAttribute('data-apagar-membro')) {
       if (!confirm(`Apagar ${m.nick} de vez?\n\nSome o registro, a ficha e as prints de gear. Não dá pra desfazer.\nA presença e os resultados antigos ficam no histórico com o nick.\n\nSe a pessoa só saiu do clã, prefira o status "Removido".`)) return;
       await call('member?id=' + id, { method: 'DELETE' });
@@ -1035,10 +1098,11 @@ function ficha(id) {
     e.preventDefault();
     const fd = new FormData(e.target);
     const body = { id, nota: fd.get('nota'), anotacoes: fd.get('anotacoes'), tags: [...fd.getAll('tags'), fd.get('novaTag')].filter(Boolean) };
+    if (admin && fd.get('novaTag') && fd.get('novaVisivel')) await call('tag', { method: 'POST', body: { nome: fd.get('novaTag'), visivel: true } }).catch(() => {});
     if (admin) Object.assign(body, { status: fd.get('status'), squad: fd.get('squad') });
     try {
       Object.assign(m, await call('member', { method: 'POST', body }));
-      D.tags = [...new Set([...D.tags, ...m.tags])];
+      D.tags = await call('tags');
       if (admin) D.squads = await call('squads');
       $('#dlg').close();
       msg(`Ficha de ${m.nick} salva.`);
@@ -1163,6 +1227,35 @@ function casarNick(nick) {
   return nota >= 0.6 ? melhor : '';
 }
 
+// criar tag e marcar se é visível pros membros (só admin; o Worker confere)
+async function tagsForm() {
+  dlg(`<h2 id="dlg-title">Tags</h2>
+    <p class="hint">Visível = aparece no perfil do membro pra todo o clã. Oculta (🔒) = só a equipe vê. Tag nova começa oculta.</p>
+    <form id="f-tags">
+      <ul class="vagas">${D.tags.map((t, i) => `<li><label class="check"><input type="checkbox" name="v-${i}" data-nome="${esc(t.nome)}"${t.visivel ? ' checked' : ''}> ${esc(t.nome)}</label><span class="muted">${t.visivel ? 'visível' : '🔒 oculta'}</span></li>`).join('')}</ul>
+      <div class="field"><label for="tg-nova">Nova tag</label><input type="text" id="tg-nova" maxlength="30"></div>
+      <label class="check"><input type="checkbox" id="tg-vis"> Visível pros membros</label>
+      <div class="status" role="status" aria-live="polite"></div>
+      <div class="actions"><button class="primary" type="submit">Salvar tags</button><button type="button" data-close>Fechar</button></div>
+    </form>`);
+  $('#f-tags').onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      for (const c of document.querySelectorAll('#f-tags [data-nome]')) {
+        const t = D.tags.find((x) => x.nome === c.dataset.nome);
+        if (t && t.visivel !== c.checked) await call('tag', { method: 'POST', body: { nome: t.nome, visivel: c.checked } });
+      }
+      if ($('#tg-nova').value.trim()) await call('tag', { method: 'POST', body: { nome: $('#tg-nova').value.trim(), visivel: $('#tg-vis').checked } });
+      D.tags = await call('tags');
+      $('#dlg').close();
+      redraw();
+      msg('Tags salvas.');
+    } catch (err) {
+      if (err.status !== 401) say($('#f-tags .status'), err.message, true);
+    }
+  };
+}
+
 // interruptores das postagens automáticas no Discord: [chave, nome, dica]
 const AUTOS = [
   ['registro', 'Novo registro', '(com as prints do gear)'],
@@ -1171,7 +1264,8 @@ const AUTOS = [
   ['kdGame', 'KD do game', '(ao salvar um game em Resultados)'],
   ['kdDia', 'KD do dia', '(ao salvar o Game 3, o último do dia)'],
   ['presenca', 'Presença do dia', '(só os nomes; a justificativa não vai)'],
-  ['tatica', 'Nova tática pública', '(título + link)'],
+  ['tatica', 'Nova tática', '(título + link)'],
+  ['aceito', 'Membro aceito', '(ao aprovar um registro: "X foi aceito no clã")'],
 ];
 // resposta do Worker sobre o que foi pro Discord ao salvar
 const DISC_TXT = { postado: 'Postado no Discord.', erro: 'Não deu pra postar no Discord (confira o webhook).' };
@@ -1237,7 +1331,7 @@ async function postsTab(tipo) {
     <div class="actions"><button type="button" class="primary" data-novo>Novo ${um === 'aviso' ? 'aviso' : 'post de tática'}</button></div>
     ${posts.length ? `<div class="table-wrap"><table>
       <thead><tr><th>Título</th><th>Data</th><th>Quem vê</th><th>Ações</th></tr></thead>
-      <tbody>${posts.map((p) => `<tr><td>${esc(p.titulo)}</td><td>${fmtDate(p.data)}</td><td>${p.publico ? 'Todo mundo' : 'Só admins'}</td>
+      <tbody>${posts.map((p) => `<tr><td>${esc(p.titulo)}</td><td>${fmtDate(p.data)}</td><td>${p.publico === false ? 'Só admins (antigo)' : 'Membros'}</td>
         <td><div class="actions"><button type="button" data-edit="${esc(p.id)}">Editar</button><button type="button" class="danger" data-del="${esc(p.id)}">Apagar</button></div></td></tr>`).join('')}</tbody>
     </table></div>` : `<p class="muted">Nada publicado em ${titulo.toLowerCase()} ainda.</p>`}`;
   T.onclick = run(async (e) => {
@@ -1309,7 +1403,7 @@ function postForm(tipo, p = { titulo: '', texto: '', imgs: [], publico: true }) 
     <form id="f-post">
       <div class="field"><label for="po-t">Título</label><input type="text" id="po-t" name="titulo" required maxlength="120" value="${esc(p.titulo)}"></div>
       <div class="field"><label for="po-x">Texto</label><textarea id="po-x" name="texto" rows="10" maxlength="20000">${esc(p.texto)}</textarea></div>
-      <label class="check"><input type="checkbox" name="publico"${p.publico ? ' checked' : ''}> Público (aparece no site pra todo mundo). Desmarcado: só admins veem.</label>
+      <p class="hint">Aparece no site só pra membros aprovados (quem entra com nick e senha).</p>
       ${p.id ? '<div class="field"><span>Imagens do post</span><div class="previews" id="po-keep"></div></div>' : ''}
       <div class="field"><label for="po-f">Adicionar imagens <span class="hint">(até 8 por post, JPG/PNG/WEBP)</span></label><input id="po-f" type="file" accept="image/jpeg,image/png,image/webp" multiple></div>
       <div class="previews" id="po-new"></div>
@@ -1342,7 +1436,7 @@ function postForm(tipo, p = { titulo: '', texto: '', imgs: [], publico: true }) 
         picker.get().forEach((b, i) => fd.append('prints', b, `img${i + 1}.jpg`));
         ids = await call('upload', { method: 'POST', body: fd });
       }
-      await call('post', { method: 'POST', body: { id: p.id, titulo: f.titulo.value, texto: f.texto.value, publico: f.publico.checked, tipo, imgs: [...keep, ...ids] } });
+      await call('post', { method: 'POST', body: { id: p.id, titulo: f.titulo.value, texto: f.texto.value, publico: true, tipo, imgs: [...keep, ...ids] } });
       picker.clear();
       $('#dlg').close();
       await postsTab(tipo);

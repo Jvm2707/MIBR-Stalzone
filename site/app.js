@@ -76,6 +76,19 @@ async function compress(file) {
 }
 
 // Campo de arquivos com pré-visualização. O <input> não tem name: os blobs comprimidos vão no envio.
+// Ctrl+V com imagem copiada (print do jogo, recorte do Windows): vai pro campo de imagem visível.
+// Se tiver mais de um na tela, vai pro do formulário em que a pessoa está.
+const PICKERS = [];
+document.addEventListener('paste', (e) => {
+  const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+  if (!imgs.length) return;
+  const visiveis = PICKERS.filter((p) => p.input.isConnected && p.input.offsetParent);
+  const alvo = visiveis.find((p) => p.input.form?.contains(document.activeElement)) || visiveis[0];
+  if (!alvo) return;
+  e.preventDefault();
+  alvo.adicionar(imgs.map((f, i) => (f.name && f.name !== 'image.png' ? f : new File([f], `print-colada-${i + 1}.${f.type.split('/')[1]}`, { type: f.type }))));
+});
+
 function imagePicker(input, previews, max, statusEl) {
   let files = [];
   const draw = () => {
@@ -92,9 +105,8 @@ function imagePicker(input, previews, max, statusEl) {
       return fig;
     }));
   };
-  input.addEventListener('change', async () => {
-    const picked = [...input.files];
-    input.value = '';
+  // mesmo caminho pra arquivo escolhido no botão e pra print colada com Ctrl+V
+  const adicionar = async (picked) => {
     for (const file of picked) {
       if (files.length >= max) { say(statusEl, t('Máximo de {n} imagens.', { n: max }), true); break; }
       if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { say(statusEl, t('"{nome}" não é JPG, PNG ou WEBP.', { nome: file.name }), true); continue; }
@@ -107,7 +119,10 @@ function imagePicker(input, previews, max, statusEl) {
       }
     }
     draw();
-  });
+  };
+  input.addEventListener('change', () => { const picked = [...input.files]; input.value = ''; adicionar(picked); });
+  input.insertAdjacentHTML('afterend', `<span class="hint">${esc(t('Dica: você também pode colar a print aqui com Ctrl+V.'))}</span>`);
+  PICKERS.push({ input, adicionar });
   return {
     get: () => files.map((f) => f.blob),
     clear() { files.forEach((f) => URL.revokeObjectURL(f.url)); files = []; draw(); },
@@ -142,12 +157,17 @@ if (document.getElementById('f-registro')) {
   // Navegação por #hash: uma seção visível por vez.
   const sections = [...document.querySelectorAll('main > section')];
   const show = (focus) => {
-    const id = location.hash.slice(1);
-    const current = sections.find((x) => x.id === id) || sections[0];
+    const id = location.hash.slice(1).split('/')[0]; // #perfil/<id>
+    // sem acesso (ou sem página escolhida): a primeira que a pessoa pode ver. Registro pra quem ainda não se
+    // registrou neste navegador, Meu registro pra quem já se registrou (o Worker também recusa o que não pode)
+    const pode = (x) => !x.dataset.so || window.podeVer?.(x.dataset.so);
+    let current = sections.find((x) => x.id === id);
+    if (!current || !pode(current)) current = sections.find(pode) || sections[0];
     sections.forEach((x) => (x.hidden = x !== current));
     document.querySelectorAll('.top nav a').forEach((a) =>
       a.hash === '#' + current.id ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
     current.querySelectorAll('.ts').forEach(ensureTS);
+    window.aoMostrar?.(current.id);
     if (focus) current.querySelector('h1').focus();
   };
   addEventListener('hashchange', () => show(true));
@@ -161,7 +181,7 @@ if (document.getElementById('f-registro')) {
     }));
 
   // done/check devolvem o texto em português; t() traduz na hora de mostrar
-  function wire(form, url, { picker, check, done }) {
+  function wire(form, url, { picker, check, done, depois }) {
     const st = form.querySelector('.status');
     const btn = form.querySelector('[type=submit]');
     form.addEventListener('submit', async (e) => {
@@ -174,11 +194,12 @@ if (document.getElementById('f-registro')) {
       btn.disabled = true;
       say(st, t('Enviando…'));
       try {
-        await api(url, { method: 'POST', body: fd });
+        const resp = await api(url, { method: 'POST', body: fd });
         form.reset();
         form.querySelectorAll('[data-toggle]').forEach((i) => (document.getElementById(i.dataset.toggle).hidden = true));
         picker?.clear();
         say(st, t(done));
+        depois?.(resp);
       } catch (err) {
         say(st, tErr(err.message), true);
       } finally {
@@ -192,16 +213,12 @@ if (document.getElementById('f-registro')) {
   wire(fr, '/api/register', {
     picker: imagePicker(fr.querySelector('#r-prints'), fr.querySelector('.previews'), 4, fr.querySelector('.status')),
     check: () => (!fr.querySelector('[name=dias]:checked') ? 'Marque pelo menos um dia em que pode jogar.' : ''),
+    depois: (resp) => window.entrou?.(resp.token), // já entra logado e vê "aguardando aprovação"
     done: 'Registro enviado! Fique de olho no Discord: um admin vai chamar você.',
-  });
-  const fg = document.getElementById('f-gear');
-  wire(fg, '/api/gear', {
-    picker: imagePicker(fg.querySelector('#g-prints'), fg.querySelector('.previews'), 4, fg.querySelector('.status')),
-    done: 'Gear enviado! Ele já está no seu histórico.',
   });
   const dlg = document.getElementById('d-apply');
   const fa = document.getElementById('f-apply');
-  wire(fa, '/api/apply', { done: 'Apply enviado! O líder vai ver no painel.' });
+  wire(fa, '/api/apply', { done: 'Apply enviado! O líder vai ver no painel.', depois: () => (fa.nick.value = window.meuNick?.() || '') }); // reset apaga o nick escondido
   dlg.querySelector('[data-close]').onclick = () => dlg.close();
 
   // ---- dados que chegam do Worker (guardados pra redesenhar ao trocar de idioma) ----
@@ -283,7 +300,8 @@ if (document.getElementById('f-registro')) {
     if (D.squadsErr) { list.innerHTML = `<p class="status bad">${esc(t('Não deu pra carregar os squads.'))} ${esc(tErr(D.squadsErr))}</p>`; return; }
     if (!D.squads) { list.innerHTML = `<p class="muted">${esc(t('Carregando squads…'))}</p>`; return; }
     if (!D.squads.length) { list.innerHTML = `<p class="muted">${esc(t('Nenhum squad criado ainda.'))}</p>`; return; }
-    const nicks = (arr) => (arr.length ? `<ul class="nicks">${arr.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : '');
+    // membro aprovado clica no nick e abre o perfil; visitante vê só o nome
+    const nicks = (arr, ids = []) => (arr.length ? `<ul class="nicks">${arr.map((n, i) => `<li>${window.podeVer?.('membro') && ids[i] ? `<a href="#perfil/${esc(ids[i])}">${esc(n)}</a>` : esc(n)}</li>`).join('')}</ul>` : '');
     list.innerHTML = D.squads.map((sq) => {
       const res = sq.reservas || [];
       const builds = (sq.builds || []).map((b) => (b.qtd ? `${b.qtd} ${t(b.tipo)}` : t(b.tipo))).join(', ');
@@ -297,13 +315,17 @@ if (document.getElementById('f-registro')) {
         ${sq.estilo ? `<p class="meta">${esc(sq.estilo)}</p>` : ''}
         <p class="meta">${esc(t('Líder: {nome}', { nome: sq.lider || t('a definir') }))}</p>
         <p><span class="count">${sq.fixos.length}</span> <span class="muted">${esc(t(sq.fixos.length === 1 ? 'fixo' : 'fixos'))}</span></p>
-        ${nicks(sq.fixos)}
-        ${res.length ? `<p class="muted">${res.length} ${esc(t(res.length === 1 ? 'reserva' : 'reservas'))}</p>${nicks(res)}` : ''}
+        ${nicks(sq.fixos, sq.fixosIds)}
+        ${res.length ? `<p class="muted">${res.length} ${esc(t(res.length === 1 ? 'reserva' : 'reservas'))}</p>${nicks(res, sq.reservasIds)}` : ''}
         <div><button type="button" class="primary" data-apply="${esc(sq.id)}" data-nome="${esc(sq.nome)}">${esc(t('Dar apply'))}</button></div>
       </article>`;
     }).join('');
     list.querySelectorAll('[data-apply]').forEach((b) => (b.onclick = () => {
       fa.squad.value = b.dataset.apply;
+      const nick = window.meuNick?.(); // já registrado: o nick vem do registro e o campo some
+      fa.nick.value = nick || '';
+      fa.nick.required = !nick;
+      fa.nick.closest('.field').hidden = !!nick;
       document.getElementById('h-apply').textContent = t('Dar apply: {nome}', { nome: b.dataset.nome });
       say(fa.querySelector('.status'), '');
       dlg.showModal();
@@ -378,8 +400,12 @@ if (document.getElementById('f-registro')) {
     .then(() => { renderConfig(); renderGearTipos(); renderRoles(); recommend(); translateStatic(); });
   api('/api/squads').then((sq) => { D.squads = sq; }, (e) => { D.squadsErr = e.message; })
     .then(() => { renderSquads(); recommend(); });
-  for (const tipo of Object.keys(TIPOS)) {
-    api('/api/posts?tipo=' + tipo).then((p) => { D.posts[tipo] = p; }, (e) => { D.postsErr[tipo] = e.message; })
+  // táticas e avisos só pra membro: o membro.js chama depois do login
+  window.carregarPosts = () => { for (const tipo of Object.keys(TIPOS)) {
+    api('/api/posts?tipo=' + tipo, { token: window.tokenSite?.() }).then((p) => { D.posts[tipo] = p; }, (e) => { D.postsErr[tipo] = e.message; })
       .then(() => renderPosts(tipo));
-  }
+  } };
+  window.renderSquadsSite = renderSquads;
+  window.D_SITE = D;
+  window.SHOW_SITE = show;
 }

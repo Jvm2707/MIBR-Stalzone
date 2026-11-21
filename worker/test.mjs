@@ -23,18 +23,29 @@ globalThis.fetch = async (url, init) => {
 const ctx = { waitUntil: (p) => p };
 
 async function call(method, path, { body, token, ip = '1.1.1.1' } = {}) {
+  const nickDoEnvio = body instanceof FormData ? body.get('nick') : null;
   const headers = { 'cf-connecting-ip': ip };
   if (token) headers.authorization = 'Bearer ' + token;
   if (body && !(body instanceof FormData)) { headers['content-type'] = 'application/json'; body = JSON.stringify(body); }
   const res = await worker.fetch(new Request('http://w' + path, { method, headers, body }), env, ctx);
-  return { status: res.status, data: await res.json().catch(() => null), headers: res.headers };
+  const data = await res.json().catch(() => null);
+  if (path === '/api/register' && data?.token) TOK[nickDoEnvio] = data.token; // o acesso do membro vem do próprio registro
+  return { status: res.status, data, headers: res.headers };
 }
 function form(fields) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) for (const x of [].concat(v)) fd.append(k, x);
   return fd;
 }
-const reg = (extra = {}) => form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', discord: '@fulano', pais: 'Brasil', fuso: 'GMT-3', dias: ['qui', 'sex'], sobre: 'Jogo toda noite', regras: 'sim', ...extra });
+const reg = (extra = {}) => {
+  const d = { 'cf-turnstile-response': 'ok', nick: 'Fulano', pais: 'Brasil', fuso: 'GMT-3', dias: ['qui', 'sex'], sobre: 'Jogo toda noite', regras: 'sim', ...extra };
+  d.discord ??= '@' + String(d.nick).toLowerCase();
+  return form(d);
+};
+// gear agora é só do próprio membro logado (Meu registro)
+const TOK = {};
+const tokenDe = async (nick) => TOK[nick];
+const gearPost = async (fd) => call('POST', '/api/me/gear', { body: fd, token: await tokenDe(fd.get('nick')) });
 
 // envios públicos
 let r = await call('POST', '/api/register', { body: reg({ 'cf-turnstile-response': 'x' }) });
@@ -52,7 +63,7 @@ assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'C', sobre
 assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'D', regras: '' }), ip: '3.3.3.3' })).status, 400, 'regras');
 assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'F', fuso: 'Brasília' }), ip: '3.3.3.3' })).status, 400, 'fuso fora do formato GMT');
 const fake = new File([new TextEncoder().encode('<script>alert(1)</script>')], 'x.png', { type: 'image/png' });
-assert.equal((await call('POST', '/api/gear', { body: form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', prints: fake }), ip: '4.4.4.4' })).status, 400, 'arquivo que não é imagem');
+assert.equal((await gearPost(form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', prints: fake }))).status, 400, 'arquivo que não é imagem');
 // cabeçalho PNG de verdade (assinatura + IHDR com largura/altura), com "tamanho" opcional pra testar o limite de bytes
 function pngFile(w, h, bytes = 64) {
   const b = new Uint8Array(bytes);
@@ -62,7 +73,7 @@ function pngFile(w, h, bytes = 64) {
   return new File([b], 'a.png');
 }
 const png = pngFile(800, 600);
-assert.equal((await call('POST', '/api/gear', { body: form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', gear: 'AK nova', prints: png }), ip: '4.4.4.4' })).status, 200);
+assert.equal((await gearPost(form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', gear: 'AK nova', prints: png }))).status, 200);
 for (const nick of ['E1', 'E2']) assert.equal((await call('POST', '/api/register', { body: reg({ nick }), ip: '5.5.5.5' })).status, 200);
 assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'E3' }), ip: '5.5.5.5' })).status, 200);
 assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'E4' }), ip: '5.5.5.5' })).status, 429, '4º envio na hora');
@@ -95,6 +106,7 @@ assert.equal((await call('GET', '/api/admin/log', { token: sn.token })).status, 
 
 // líder só vê o próprio squad
 const members = (await call('GET', '/api/admin/members', { token: sn.token })).data;
+for (const x of members) await call('POST', '/api/admin/approve', { body: { id: x.id, aprovar: true }, token: sup });
 const [m1, m2] = members;
 await call('POST', '/api/admin/squad', { body: { id: sqA.id, nome: 'Alfa', fixos: [m1.id] }, token: sn.token });
 await call('POST', '/api/admin/squad', { body: { id: sqB.id, nome: 'Bravo', fixos: [m2.id] }, token: sn.token });
@@ -123,6 +135,7 @@ assert.equal((await call('GET', '/api/admin/backup', { token: lid.token })).stat
 // registro escolhendo o squad Alfa vira pedido; o líder vê a ficha do candidato sem avaliações, mas não edita
 assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'Novato', squad: sqA.id }), ip: '7.7.7.7' })).status, 200);
 const novato = (await call('GET', '/api/admin/members', { token: sn.token })).data.find((m) => m.nick === 'Novato');
+await call('POST', '/api/admin/approve', { body: { id: novato.id, aprovar: true }, token: sup });
 await call('POST', '/api/admin/member', { body: { id: novato.id, nota: 9, anotacoes: 'segredo do admin' }, token: sn.token });
 const pedido = (await call('GET', '/api/admin/applies', { token: lid.token })).data.find((a) => a.nick === 'Novato');
 assert.equal(pedido.origem, 'registro');
@@ -163,7 +176,7 @@ assert.deepEqual(cfgS.gearTipos, ['Speed', 'Tank', 'Híbrido']);
 // tipo de gear no registro e no gear; registro guarda a season
 assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'G1', gearTipo: 'Voador' }), ip: '8.8.8.1' })).status, 400, 'tipo de gear fora da config');
 assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'G1', gearTipo: ['Tank', 'Speed'] }), ip: '8.8.8.1' })).status, 200);
-assert.equal((await call('POST', '/api/gear', { body: form({ 'cf-turnstile-response': 'ok', nick: 'G1', gearTipo: 'Híbrido' }), ip: '8.8.8.2' })).status, 200, 'gear só com tipo');
+assert.equal((await gearPost(form({ 'cf-turnstile-response': 'ok', nick: 'G1', gearTipo: 'Híbrido' }))).status, 200, 'gear só com tipo');
 const g1 = (await call('GET', '/api/admin/members', { token: sup })).data.find((m) => m.nick === 'G1');
 assert.deepEqual(g1.gearTipos, ['Híbrido']);
 assert.deepEqual(g1.gear.map((g) => g.tipos), [['Tank', 'Speed'], ['Híbrido']]);
@@ -222,12 +235,12 @@ await call('POST', '/api/admin/attendance', { body: { date: '2026-12-05', marks:
 assert.equal((await call('GET', '/api/admin/attendance', { token: sup })).data.find((a) => a.date === '2026-12-05').season, s2.id, 'presença guarda a season da data');
 
 // ---- limites de imagem (o Worker não confia no navegador) ----
-const tentaGear = (file, ip) => call('POST', '/api/gear', { body: form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', prints: file }), ip });
+const tentaGear = (file, ip) => gearPost(form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', prints: file }));
 assert.equal((await tentaGear(pngFile(800, 600, 1.2e6), '6.6.6.1')).status, 413, 'imagem acima de 1 MB');
 assert.equal((await tentaGear(pngFile(5000, 300), '6.6.6.2')).status, 413, 'lado acima de 4096px');
 assert.equal((await tentaGear(pngFile(0, 0), '6.6.6.3')).status, 400, 'dimensão ilegível');
 const cinco = Array.from({ length: 5 }, () => pngFile(800, 600));
-assert.equal((await call('POST', '/api/gear', { body: form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', prints: cinco }), ip: '6.6.6.4' })).status, 400, 'mais de 4 imagens');
+assert.equal((await gearPost(form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', prints: cinco }))).status, 400, 'mais de 4 imagens');
 const seis = Array.from({ length: 6 }, () => pngFile(800, 600, 900e3));
 const fd6 = new FormData(); seis.forEach((f) => fd6.append('prints', f));
 assert.equal((await call('POST', '/api/admin/upload', { body: fd6, token: sup })).status, 413, 'soma acima de 5 MB');
@@ -237,13 +250,13 @@ const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 1
 assert.equal((await tentaGear(new File([jpg], 'a.jpg'), '6.6.6.5')).status, 413, 'jpeg alto demais');
 const webp = new Uint8Array(40); webp.set([...'RIFF'].map((c) => c.charCodeAt(0))); webp.set([...'WEBPVP8X'].map((c) => c.charCodeAt(0)), 8);
 new DataView(webp.buffer).setUint32(24, 799, true); new DataView(webp.buffer).setUint32(27, 599, true);
-assert.equal((await call('POST', '/api/gear', { body: form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', gear: 'webp ok', prints: new File([webp], 'a.webp') }), ip: '6.6.6.6' })).status, 200, 'webp 800x600 aceito');
+assert.equal((await gearPost(form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', gear: 'webp ok', prints: new File([webp], 'a.webp') }))).status, 200, 'webp 800x600 aceito');
 
 // ---- prints de gear antigas expiram em 60 dias; as da última ficam sem prazo ----
 const ttls = {};
 const putOriginal = KV.put;
 KV.put = async (k, v, o) => { if (k.startsWith('img:')) ttls[k] = o?.expirationTtl; return putOriginal(k, v, o); };
-await call('POST', '/api/gear', { body: form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', prints: pngFile(640, 480) }), ip: '6.6.6.7' });
+await gearPost(form({ 'cf-turnstile-response': 'ok', nick: 'Fulano', prints: pngFile(640, 480) }));
 KV.put = putOriginal;
 const fulanoG = (await call('GET', '/api/admin/members', { token: sup })).data.find((m) => m.nick === 'Fulano');
 const [penultimo, ultimo] = fulanoG.gear.slice(-2);
@@ -322,6 +335,68 @@ assert.equal(store.get('nick:' + doBravo.nick.toLowerCase()), undefined, 'nick l
 assert.ok(!(await call('GET', '/api/squads')).data.find((s) => s.id === sqB.id).fixos.includes(doBravo.nick), 'sumiu do squad');
 assert.equal((await call('POST', '/api/register', { body: reg({ nick: doBravo.nick }), ip: '5.4.3.2' })).status, 200, 'nick pode registrar de novo');
 
+// ---- conta de membro, aprovação, tags visíveis e allowlist ----
+assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'Outro', discord: '@FULANO' }), ip: '1.2.3.9' })).status, 409, 'Discord repetido');
+const rNovo = (await call('POST', '/api/register', { body: reg({ nick: 'Pendente1', idade: '25', sobre: 'texto privado' }), ip: '1.2.3.10' })).data;
+assert.ok(rNovo.token, 'já entra logado depois de registrar');
+const pend = (await call('GET', '/api/admin/members', { token: sup })).data.find((m) => m.nick === 'Pendente1');
+assert.equal(pend.status, 'pendente', 'registro novo entra pendente');
+assert.ok(pend.hash === undefined && pend.salt === undefined, 'nada de senha no registro');
+for (const rota of ['/api/posts', '/api/profiles', '/api/ranking', '/api/profile/' + m1.id]) {
+  assert.equal((await call('GET', rota, { token: rNovo.token })).status, 403, 'pendente bloqueado em ' + rota);
+  assert.equal((await call('GET', rota)).status, 401, 'visitante bloqueado em ' + rota);
+}
+assert.equal((await call('GET', '/api/squads')).status, 200, 'squads continua público');
+assert.equal((await call('GET', '/api/me', { token: rNovo.token })).data.status, 'pendente', 'pendente vê o próprio registro');
+assert.equal((await call('POST', '/api/admin/approve', { body: { id: pend.id, aprovar: true }, token: lid2 })).status, 403, 'líder não aprova');
+assert.equal((await call('POST', '/api/admin/approve', { body: { id: pend.id, aprovar: true }, token: rNovo.token })).status, 401, 'membro não aprova');
+await call('POST', '/api/admin/approve', { body: { id: pend.id, aprovar: true }, token: sup });
+
+// tags: visível x oculta; a oculta nunca sai pra membro
+await call('POST', '/api/admin/tag', { body: { nome: 'bom player', visivel: true }, token: sup });
+await call('POST', '/api/admin/tag', { body: { nome: 'burro', visivel: false }, token: sup });
+assert.equal((await call('POST', '/api/admin/tag', { body: { nome: 'x', visivel: true }, token: lid2 })).status, 403, 'líder não muda visibilidade');
+assert.equal((await call('GET', '/api/admin/tags', { token: sup })).data.find((t) => t.nome === 'tóxico').visivel, false, 'tag antiga vira oculta');
+await call('POST', '/api/admin/member', { body: { id: pend.id, tags: ['bom player', 'burro'], nota: 3, anotacoes: 'segredo' }, token: sup });
+const tokP = await tokenDe('Pendente1');
+const perfP = (await call('GET', '/api/profile/' + pend.id, { token: tokP })).data;
+assert.deepEqual(perfP.tags, ['bom player'], 'membro vê só a tag visível');
+assert.equal(perfP.status, 'teste', 'membro vê o status');
+for (const campo of ['discord', 'idade', 'pais', 'fuso', 'sobre', 'cla', 'claQual', 'fps', 'fpsQual', 'nota', 'anotacoes', 'hash', 'salt', 'motivoRecusa', 'squadDesejado']) {
+  assert.ok(!(campo in perfP), 'perfil público sem ' + campo);
+}
+const meu = (await call('GET', '/api/me', { token: tokP })).data;
+assert.deepEqual(meu.tags, ['bom player'], 'nem no próprio perfil a oculta aparece');
+assert.ok(!('nota' in meu) && !('anotacoes' in meu) && !('hash' in meu), 'meu registro sem nota/anotações/hash');
+assert.equal(meu.sobre, 'texto privado', 'o dono vê os próprios dados');
+assert.ok(!JSON.stringify((await call('GET', '/api/profiles', { token: tokP })).data).includes('burro'), 'lista sem tag oculta');
+assert.ok(!JSON.stringify((await call('GET', '/api/ranking', { token: tokP })).data).includes('burro'), 'ranking sem tag oculta');
+
+// membro tentando mudar campo de admin pela API
+await call('POST', '/api/me', { body: { ...meu, status: 'veterano', nota: 10, tags: ['líder'], squad: sqA.id, anotacoes: 'hack' }, token: tokP });
+const depois = (await call('GET', '/api/admin/members', { token: sup })).data.find((m) => m.id === pend.id);
+assert.deepEqual([depois.status, depois.nota, depois.squad, depois.anotacoes], ['teste', 3, '', 'segredo'], 'membro não muda status/nota/squad/anotações');
+assert.deepEqual(depois.tags, ['bom player', 'burro'], 'membro não muda tags');
+assert.equal((await call('POST', '/api/admin/member', { body: { id: pend.id, nota: 10 }, token: tokP })).status, 401, 'token de membro não entra no painel');
+const meu2 = (await call('POST', '/api/me', { body: { ...meu, idade: '26', mic: 'sim' }, token: tokP })).data;
+assert.equal(meu2.idade, '26', 'membro edita o próprio registro');
+
+// removido perde o acesso; link de acesso devolve; excluir só o próprio (sem senha)
+await call('POST', '/api/admin/member', { body: { id: pend.id, status: 'removido' }, token: sup });
+assert.equal((await call('GET', '/api/me', { token: tokP })).status, 401, 'removido perde o acesso');
+assert.equal((await call('POST', '/api/admin/member-acesso', { body: { id: pend.id }, token: lid2 })).status, 403, 'líder não gera link');
+await call('POST', '/api/admin/member', { body: { id: pend.id, status: 'membro' }, token: sup });
+const tokLink = (await call('POST', '/api/admin/member-acesso', { body: { id: pend.id }, token: sup })).data.token;
+assert.equal((await call('GET', '/api/profiles', { token: tokLink })).status, 200, 'link de acesso funciona');
+const outroAntes = (await call('GET', '/api/admin/members', { token: sup })).data.length;
+await call('POST', '/api/me/delete', { body: {}, token: tokLink });
+const listaDepois = (await call('GET', '/api/admin/members', { token: sup })).data;
+assert.ok(!listaDepois.some((m) => m.id === pend.id) && listaDepois.length === outroAntes - 1, 'excluiu só o próprio');
+assert.equal((await call('GET', '/api/me', { token: tokLink })).status, 401, 'acesso some ao excluir');
+assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'Pendente1' }), ip: '1.2.3.11' })).status, 200, 'depois de excluir pode registrar de novo');
+assert.equal((await call('POST', '/api/member/login', { body: {} })).status, 404, 'não existe login por senha');
+assert.ok(!JSON.stringify((await call('GET', '/api/config')).data).includes('playlist'), 'playlist não aparece mais');
+
 // trocar cargo derruba a sessão
 await call('POST', '/api/admin/user', { body: { name: 'sn', role: 'lider_squad', squad: sqB.id }, token: sup });
 assert.equal((await call('GET', '/api/admin/me', { token: sn.token })).status, 401);
@@ -347,8 +422,8 @@ assert.deepEqual(cfg.playstyles, [{ nome: 'Livre', desc: 'Roda o mapa' }]);
 await call('POST', '/api/admin/post', { body: { titulo: 'Guerra adiada', tipo: 'aviso', publico: true }, token: sup });
 await call('POST', '/api/admin/post', { body: { titulo: 'Rota B', publico: true }, token: sup });
 await call('POST', '/api/admin/post', { body: { titulo: 'Segredo', tipo: 'aviso', publico: false }, token: sup });
-assert.deepEqual((await call('GET', '/api/posts?tipo=aviso')).data.map((p) => p.titulo), ['Guerra adiada']);
-assert.deepEqual((await call('GET', '/api/posts')).data.map((p) => p.titulo), ['Rota B']);
+assert.deepEqual((await call('GET', '/api/posts?tipo=aviso', { token: sup })).data.map((p) => p.titulo), ['Guerra adiada']);
+assert.deepEqual((await call('GET', '/api/posts', { token: sup })).data.map((p) => p.titulo), ['Rota B']);
 const fulano = (await call('GET', '/api/admin/members', { token: sup })).data.find((m) => m.nick === 'Fulano');
 assert.equal(fulano.cla, 'nao');
 assert.equal(fulano.sobre, 'Jogo toda noite');
@@ -356,4 +431,7 @@ assert.equal((await call('POST', '/api/register', { body: reg({ nick: 'SemSobre'
 
 const log = (await call('GET', '/api/admin/log', { token: sup })).data;
 assert.ok(log.some((l) => l.texto === `marcou falta em ${m1.nick} em 21/11/2026`), 'log de presença');
+// tag gravada embrulhada ({nome:{nome}}) volta como texto
+store.set('tags', { v: JSON.stringify([{ nome: { nome: 'bom player', visivel: false }, visivel: true }, 'promessa']) });
+assert.deepEqual((await call('GET', '/api/admin/tags', { token: sup })).data, [{ nome: 'bom player', visivel: true }, { nome: 'promessa', visivel: false }], 'tags embrulhadas consertadas');
 console.log('ok: todos os testes passaram');
