@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src 'self' https: http://localhost:8787; img-src 'self' blob: data: https: http://localhost:8787; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>Clã MIBR | Stalzone</title>
+  <meta name="description" content="Registro, squads, regras e táticas do clã MIBR no Stalzone.">
+  <link rel="icon" href="logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Chakra+Petch:wght@600;700&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+  <script src="i18n.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="#registro">MIBR <span>Stalzone</span></a>
+      <nav aria-label="Páginas">
+        <a href="#registro">Registro</a>
+        <a href="#avisos">Avisos</a>
+        <a href="#gear">Atualizar gear</a>
+        <a href="#squads">Squads</a>
+        <a href="#regras">Regras</a>
+        <a href="#taticas">Táticas</a>
+      </nav>
+      <div class="langs" role="group" aria-label="Idioma">
+        <button type="button" data-lang="pt" aria-label="Português" title="Português"><svg viewBox="0 0 30 20" aria-hidden="true"><rect width="30" height="20" fill="#009C3B"/><path d="M15 2.5 27.5 10 15 17.5 2.5 10z" fill="#FFDF00"/><circle cx="15" cy="10" r="4.2" fill="#002776"/></svg></button>
+        <button type="button" data-lang="en" aria-label="English" title="English"><svg viewBox="0 0 30 20" aria-hidden="true"><rect width="30" height="20" fill="#fff"/><path d="M0 0h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30v1.54H0zm0 3.07h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30v1.54H0zm0 3.07h30v1.54H0z" fill="#B22234"/><rect width="13" height="10.77" fill="#3C3B6E"/></svg></button>
+        <button type="button" data-lang="es" aria-label="Español" title="Español"><svg viewBox="0 0 30 20" aria-hidden="true"><rect width="30" height="20" fill="#AA151B"/><rect y="5" width="30" height="10" fill="#F1BF00"/></svg></button>
+      </div>
+      <img class="logo" src="logo.png" alt="Logo do clã: gorila na bandeira do Brasil">
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- REGISTRO -->
+    <section id="registro" class="narrow" aria-labelledby="h-registro">
+      <h1 id="h-registro" tabindex="-1">Entrar pro clã</h1>
+      <p class="lead">Preencha a ficha. Os admins leem tudo e chamam você pro teste. Campos com <span class="req">*</span> são obrigatórios.</p>
+
+      <form id="f-registro">
+        <div class="row">
+          <div class="field">
+            <label for="r-nick">Nick no jogo <span class="req" aria-hidden="true">*</span></label>
+            <input id="r-nick" name="nick" type="text" maxlength="32" required autocomplete="nickname">
+          </div>
+          <div class="field">
+            <label for="r-discord">Discord <span class="req" aria-hidden="true">*</span></label>
+            <input id="r-discord" name="discord" type="text" maxlength="40" required placeholder="@seunome" autocapitalize="none">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="r-idade">Idade <span class="hint">(opcional)</span></label>
+            <input id="r-idade" name="idade" type="text" inputmode="numeric" pattern="[0-9]{2}" maxlength="2" title="Idade com 2 dígitos">
+          </div>
+          <div class="field">
+            <label for="r-pais">País <span class="req" aria-hidden="true">*</span></label>
+            <input id="r-pais" name="pais" type="text" maxlength="60" required placeholder="Brasil" autocomplete="country-name">
+          </div>
+          <div class="field">
+            <label for="r-fuso">Fuso horário <span class="req" aria-hidden="true">*</span></label>
+            <select id="r-fuso" name="fuso" required aria-describedby="r-fuso-hint"><option value="">Escolha</option></select>
+            <span class="hint" id="r-fuso-hint">Já vem marcado o fuso do seu aparelho. Brasília é GMT-3.</span>
+          </div>
+        </div>
+
+        <fieldset aria-describedby="r-dias-hint">
+          <legend>Dias que pode jogar <span class="req" aria-hidden="true">*</span></legend>
+          <div class="days">
+            <label class="day"><input type="checkbox" name="dias" value="seg"><span class="gem" aria-hidden="true"></span>Seg<small></small></label>
+            <label class="day"><input type="checkbox" name="dias" value="ter"><span class="gem" aria-hidden="true"></span>Ter<small></small></label>
+            <label class="day"><input type="checkbox" name="dias" value="qua"><span class="gem" aria-hidden="true"></span>Qua<small></small></label>
+            <label class="day war"><input type="checkbox" name="dias" value="qui"><span class="gem" aria-hidden="true"></span>Qui<small>guerra</small></label>
+            <label class="day war"><input type="checkbox" name="dias" value="sex"><span class="gem" aria-hidden="true"></span>Sex<small>guerra</small></label>
+            <label class="day war"><input type="checkbox" name="dias" value="sab"><span class="gem" aria-hidden="true"></span>Sáb<small>guerra</small></label>
+            <label class="day"><input type="checkbox" name="dias" value="dom"><span class="gem" aria-hidden="true"></span>Dom<small></small></label>
+          </div>
+          <p class="war-time" id="r-dias-hint">Guerra de quinta a sábado, às <strong data-horario data-dyn>…</strong></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Sua função e seu gear</legend>
+          <p class="hint">Como você costuma jogar? Marque quantas quiser.</p>
+          <div class="roles" id="r-playstyles"></div>
+          <div class="field">
+            <label for="r-playstyleOutro">Outra função ou detalhe <span class="hint">(opcional)</span></label>
+            <input id="r-playstyleOutro" name="playstyleOutro" type="text" maxlength="100">
+          </div>
+          <div class="field">
+            <label for="r-gear">Descreva seu gear <span class="hint">(opcional)</span></label>
+            <textarea id="r-gear" name="gear" maxlength="1000"></textarea>
+          </div>
+          <div class="field">
+            <label for="r-prints">Prints do gear <span class="hint">(até 4, JPG/PNG/WEBP)</span></label>
+            <input id="r-prints" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+          </div>
+          <div class="previews" aria-label="Prints escolhidos"></div>
+        </fieldset>
+
+        <div class="field">
+          <label for="r-squad">Squad em que quer jogar <span class="hint">(opcional)</span></label>
+          <select id="r-squad" name="squad" aria-describedby="r-rec" data-dyn></select>
+          <p class="rec" id="r-rec" aria-live="polite"></p>
+        </div>
+
+        <fieldset>
+          <legend>Experiência</legend>
+          <div class="field">
+            <span id="r-cla-q">Já foi de algum clã no Stalzone? <span class="req" aria-hidden="true">*</span></span>
+            <div class="options" role="radiogroup" aria-labelledby="r-cla-q">
+              <label class="check"><input type="radio" name="cla" value="sim" required data-toggle="r-cla-qual"> Sim</label>
+              <label class="check"><input type="radio" name="cla" value="nao" data-toggle="r-cla-qual"> Não</label>
+            </div>
+          </div>
+          <div class="field" id="r-cla-qual" hidden>
+            <label for="r-claQual">Qual ou quais clãs, e por quanto tempo?</label>
+            <input id="r-claQual" name="claQual" type="text" maxlength="200">
+          </div>
+          <div class="field">
+            <span id="r-fps-q">Já jogou outro FPS? <span class="req" aria-hidden="true">*</span></span>
+            <div class="options" role="radiogroup" aria-labelledby="r-fps-q">
+              <label class="check"><input type="radio" name="fps" value="sim" required data-toggle="r-fps-qual"> Sim</label>
+              <label class="check"><input type="radio" name="fps" value="nao" data-toggle="r-fps-qual"> Não</label>
+            </div>
+          </div>
+          <div class="field" id="r-fps-qual" hidden>
+            <label for="r-fpsQual">Qual ou quais, seu rank mais alto e por quanto tempo?</label>
+            <input id="r-fpsQual" name="fpsQual" type="text" maxlength="200">
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Tem microfone? <span class="req" aria-hidden="true">*</span></legend>
+          <div class="options">
+            <label class="check"><input type="radio" name="mic" value="sim" required> Sim</label>
+            <label class="check"><input type="radio" name="mic" value="nao"> Não</label>
+          </div>
+        </fieldset>
+
+        <div class="field">
+          <label for="r-sobre">Fale sobre você <span class="hint">(opcional)</span></label>
+          <textarea id="r-sobre" name="sobre" maxlength="1000"></textarea>
+        </div>
+
+        <label class="check"><input type="checkbox" name="regras" value="sim" required> <span>Li e aceito as <a href="#regras">regras do clã</a> <span class="req" aria-hidden="true">*</span></span></label>
+
+        <div class="ts"></div>
+        <div class="status" role="status" aria-live="polite"></div>
+        <div class="actions"><button class="primary" type="submit">Enviar registro</button></div>
+      </form>
+    </section>
+
+    <!-- AVISOS -->
+    <section id="avisos" aria-labelledby="h-avisos" hidden>
+      <h1 id="h-avisos" tabindex="-1">Avisos</h1>
+      <div id="avisos-list" data-dyn><p class="muted">Carregando avisos…</p></div>
+    </section>
+
+    <!-- GEAR -->
+    <section id="gear" class="narrow" aria-labelledby="h-gear" hidden>
+      <h1 id="h-gear" tabindex="-1">Atualizar gear</h1>
+      <p class="lead">Mandou gear novo? Ele entra no seu histórico com a data de hoje. Precisa ter feito o registro antes.</p>
+      <form id="f-gear">
+        <div class="field">
+          <label for="g-nick">Nick no jogo <span class="req" aria-hidden="true">*</span></label>
+          <input id="g-nick" name="nick" type="text" maxlength="32" required autocomplete="nickname">
+        </div>
+        <div class="field">
+          <label for="g-gear">Gear atual</label>
+          <textarea id="g-gear" name="gear" maxlength="1000"></textarea>
+        </div>
+        <div class="field">
+          <label for="g-prints">Prints <span class="hint">(até 4, JPG/PNG/WEBP)</span></label>
+          <input id="g-prints" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+        </div>
+        <div class="previews" aria-label="Prints escolhidos"></div>
+        <div class="ts"></div>
+        <div class="status" role="status" aria-live="polite"></div>
+        <div class="actions"><button class="primary" type="submit">Enviar gear</button></div>
+      </form>
+    </section>
+
+    <!-- SQUADS -->
+    <section id="squads" aria-labelledby="h-squads" hidden>
+      <h1 id="h-squads" tabindex="-1">Squads</h1>
+      <p class="lead">Viu um squad com a sua cara? Dê apply e o líder responde pelo painel.</p>
+      <div class="grid" id="squads-list" data-dyn><p class="muted">Carregando squads…</p></div>
+
+      <dialog id="d-apply" aria-labelledby="h-apply">
+        <form id="f-apply">
+          <h2 id="h-apply">Dar apply</h2>
+          <input type="hidden" name="squad">
+          <div class="field">
+            <label for="a-nick">Nick no jogo <span class="req" aria-hidden="true">*</span></label>
+            <input id="a-nick" name="nick" type="text" maxlength="32" required autocomplete="nickname">
+          </div>
+          <div class="field">
+            <label for="a-msg">Mensagem curta</label>
+            <textarea id="a-msg" name="msg" maxlength="300"></textarea>
+          </div>
+          <div class="ts"></div>
+          <div class="status" role="status" aria-live="polite"></div>
+          <div class="actions">
+            <button class="primary" type="submit">Enviar apply</button>
+            <button type="button" data-close>Cancelar</button>
+          </div>
+        </form>
+      </dialog>
+    </section>
+
+    <!-- REGRAS -->
+    <section id="regras" class="narrow" aria-labelledby="h-regras" hidden>
+      <h1 id="h-regras" tabindex="-1">Regras do clã</h1>
+      <div id="regras-texto" class="pre" data-dyn>Carregando…</div>
+    </section>
+
+    <!-- TÁTICAS -->
+    <section id="taticas" aria-labelledby="h-taticas" hidden>
+      <h1 id="h-taticas" tabindex="-1">Táticas</h1>
+      <div id="taticas-list" data-dyn><p class="muted">Carregando táticas…</p></div>
+    </section>
+  </main>
+</body>
+</html>

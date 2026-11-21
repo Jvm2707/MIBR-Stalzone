@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https: http://localhost:8787; img-src 'self' blob: data: https: http://localhost:8787; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta name="robots" content="noindex">
+  <title>Painel | Clã MIBR</title>
+  <link rel="icon" href="logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Chakra+Petch:wght@600;700&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+  <script src="app.js" defer></script>
+  <script src="admin.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="index.html">MIBR <span>Painel</span></a>
+      <nav aria-label="Conta"><span class="muted" id="quem"></span></nav>
+      <button type="button" id="sair" hidden>Sair</button>
+      <img class="logo" src="logo.png" alt="Logo do clã: gorila na bandeira do Brasil">
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section id="v-login" class="narrow" hidden aria-labelledby="h-login">
+      <h1 id="h-login">Entrar no painel</h1>
+      <form id="f-login">
+        <div class="field">
+          <label for="l-user">Usuário</label>
+          <input id="l-user" name="user" type="text" required autocomplete="username" autocapitalize="none" maxlength="32">
+        </div>
+        <div class="field">
+          <label for="l-pass">Senha</label>
+          <input id="l-pass" name="pass" type="password" required autocomplete="current-password" maxlength="128">
+        </div>
+        <div class="status" role="status" aria-live="polite"></div>
+        <div class="actions"><button class="primary" type="submit">Entrar</button></div>
+      </form>
+    </section>
+
+    <section id="v-senha" class="narrow" hidden aria-labelledby="h-senha">
+      <h1 id="h-senha">Troque sua senha</h1>
+      <p class="lead">Sua senha é provisória. Crie uma nova pra continuar.</p>
+      <form id="f-senha">
+        <div class="field">
+          <label for="s-atual">Senha atual</label>
+          <input id="s-atual" name="atual" type="password" required autocomplete="current-password" maxlength="128">
+        </div>
+        <div class="field">
+          <label for="s-nova">Nova senha <span class="hint">(mínimo 8 caracteres)</span></label>
+          <input id="s-nova" name="nova" type="password" required minlength="8" maxlength="128" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label for="s-conf">Repita a nova senha</label>
+          <input id="s-conf" name="conf" type="password" required minlength="8" maxlength="128" autocomplete="new-password">
+        </div>
+        <div class="status" role="status" aria-live="polite"></div>
+        <div class="actions"><button class="primary" type="submit">Salvar senha</button></div>
+      </form>
+    </section>
+
+    <section id="v-painel" hidden aria-label="Painel">
+      <nav class="tabs" aria-label="Seções do painel">
+        <button type="button" data-tab="membros" data-roles="superadmin admin lider_squad">Membros</button>
+        <button type="button" data-tab="presenca" data-roles="superadmin admin lider_squad">Presença</button>
+        <button type="button" data-tab="squads" data-roles="superadmin admin lider_squad">Squads</button>
+        <button type="button" data-tab="avisos" data-roles="superadmin admin">Avisos</button>
+        <button type="button" data-tab="taticas" data-roles="superadmin admin">Táticas</button>
+        <button type="button" data-tab="exportar" data-roles="superadmin admin">Exportar</button>
+        <button type="button" data-tab="discord" data-roles="superadmin admin">Discord</button>
+        <button type="button" data-tab="equipe" data-roles="superadmin">Equipe</button>
+        <button type="button" data-tab="config" data-roles="superadmin">Config</button>
+        <button type="button" data-tab="log" data-roles="superadmin">Log</button>
+      </nav>
+      <div class="status" id="msg" role="status" aria-live="polite"></div>
+      <div id="tab"></div>
+    </section>
+
+    <dialog id="dlg" class="wide" aria-labelledby="dlg-title"></dialog>
+  </main>
+</body>
+</html>
